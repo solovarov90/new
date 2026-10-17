@@ -1,0 +1,175 @@
+"""Gemini: расшифровка голосовых и разбор ситуации по схеме 4 шага."""
+
+import json
+import logging
+from dataclasses import dataclass, field
+
+from google import genai
+from google.genai import errors, types
+
+log = logging.getLogger(__name__)
+
+FEELINGS = ["Обида", "Злость", "Страх", "Стыд", "Вина", "Тревога", "Одиночество", "Жалость к себе", "Ревность"]
+AFFECTED = ["Самоуважение", "Амбиции", "Безопасность", "Сексуальные отношения", "Отношения с людьми", "Кошелёк"]
+DEFECTS = ["Эгоизм", "Нечестность", "Корысть", "Страх"]
+
+TRANSCRIBE_PROMPT = (
+    "Расшифруй это голосовое сообщение дословно на русском языке. "
+    "Верни только текст сообщения, без пояснений, заголовков и меток времени."
+)
+
+SYSTEM_PROMPT = f"""Ты помогаешь человеку, который проходит программу 12 шагов Анонимных Алкоголиков, \
+разбирать ситуации по схеме 4 шага (таблица обид). Он присылает рассказ о ситуации своими словами, \
+часто расшифрованный из голосового сообщения.
+
+Разложи рассказ по колонкам таблицы обид:
+- situation: коротко, за что обида или что произошло (до 80 символов).
+- who: на кого обида или с кем ситуация, как назвал человек. Если это кто-то из списка известных людей, \
+напиши имя точно как в списке.
+- feelings, affected, defects: только значения из разрешённых списков.
+- selfishness, dishonesty, self_seeking, fear: моя роль по каждому дефекту (эгоизм, нечестность, корысть, \
+страх) от первого лица, словами человека: «Я считал, что…», «Я делал вид…», «Я хотел…», «Страх…».
+- my_role: одной-двумя фразами, где была моя часть в ситуации.
+- next_step: одно небольшое действие по программе, если человек сам его назвал или оно прямо следует \
+из рассказа (помолиться за человека, позвонить спонсору, извиниться). Иначе пустая строка.
+- questions: до трёх мягких открытых вопросов о том, чего не хватает для колонок. Например: \
+«Чего ты хотел получить в этой ситуации?», «Где здесь была твоя часть?», «Чего ты боялся?». \
+Если всё заполнено, пустой список.
+- support_needed: true, если человек пишет о тяге выпить или употребить, о срыве, о мыслях навредить \
+себе или о прямой опасности. Иначе false.
+
+Правила:
+- Используй только то, что человек сказал. Ничего не придумывай. Если колонка не раскрыта, оставь \
+пустую строку и задай про неё вопрос.
+- Не ставь диагнозов, не морализируй и не выноси вердиктов. Ты не заменяешь спонсора.
+- Пиши по-русски.
+
+Разрешённые чувства: {", ".join(FEELINGS)}.
+Разрешённые сферы: {", ".join(AFFECTED)}.
+Разрешённые дефекты: {", ".join(DEFECTS)}."""
+
+
+def _enum_list(values: list[str]) -> dict:
+    return {"type": "array", "items": {"type": "string", "enum": values}}
+
+
+ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "situation": {"type": "string"},
+        "who": {"type": "string"},
+        "feelings": _enum_list(FEELINGS),
+        "affected": _enum_list(AFFECTED),
+        "defects": _enum_list(DEFECTS),
+        "selfishness": {"type": "string"},
+        "dishonesty": {"type": "string"},
+        "self_seeking": {"type": "string"},
+        "fear": {"type": "string"},
+        "my_role": {"type": "string"},
+        "next_step": {"type": "string"},
+        "questions": {"type": "array", "items": {"type": "string"}},
+        "support_needed": {"type": "boolean"},
+    },
+    "required": [
+        "situation",
+        "who",
+        "feelings",
+        "affected",
+        "defects",
+        "selfishness",
+        "dishonesty",
+        "self_seeking",
+        "fear",
+        "my_role",
+        "next_step",
+        "questions",
+        "support_needed",
+    ],
+}
+
+
+class AIError(RuntimeError):
+    pass
+
+
+@dataclass
+class Analysis:
+    situation: str = ""
+    who: str = ""
+    feelings: list[str] = field(default_factory=list)
+    affected: list[str] = field(default_factory=list)
+    defects: list[str] = field(default_factory=list)
+    selfishness: str = ""
+    dishonesty: str = ""
+    self_seeking: str = ""
+    fear: str = ""
+    my_role: str = ""
+    next_step: str = ""
+    questions: list[str] = field(default_factory=list)
+    support_needed: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Analysis":
+        def text(key: str) -> str:
+            value = data.get(key)
+            return value.strip() if isinstance(value, str) else ""
+
+        def pick(key: str, allowed: list[str]) -> list[str]:
+            values = data.get(key) or []
+            return [v for v in dict.fromkeys(values) if v in allowed]
+
+        questions = [q.strip() for q in data.get("questions") or [] if isinstance(q, str) and q.strip()]
+        return cls(
+            situation=text("situation"),
+            who=text("who"),
+            feelings=pick("feelings", FEELINGS),
+            affected=pick("affected", AFFECTED),
+            defects=pick("defects", DEFECTS),
+            selfishness=text("selfishness"),
+            dishonesty=text("dishonesty"),
+            self_seeking=text("self_seeking"),
+            fear=text("fear"),
+            my_role=text("my_role"),
+            next_step=text("next_step"),
+            questions=questions[:3],
+            support_needed=bool(data.get("support_needed")),
+        )
+
+
+class Assistant:
+    def __init__(self, api_key: str, model: str, client: genai.Client | None = None):
+        self._client = client or genai.Client(api_key=api_key)
+        self._model = model
+
+    async def transcribe(self, audio: bytes, mime_type: str) -> str:
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self._model,
+                contents=[types.Part.from_bytes(data=audio, mime_type=mime_type), TRANSCRIBE_PROMPT],
+            )
+        except errors.APIError as exc:
+            raise AIError(f"Gemini не расшифровал голосовое: {exc}") from exc
+        result = (response.text or "").strip()
+        if not result:
+            raise AIError("Gemini вернул пустую расшифровку")
+        return result
+
+    async def analyze(self, story: str, known_people: list[str]) -> Analysis:
+        known = ", ".join(known_people) if known_people else "нет"
+        prompt = f"Известные люди: {known}.\n\nРассказ:\n{story}"
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self._model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_json_schema=ANALYSIS_SCHEMA,
+                ),
+            )
+        except errors.APIError as exc:
+            raise AIError(f"Gemini не разобрал ситуацию: {exc}") from exc
+        try:
+            return Analysis.from_dict(json.loads(response.text or ""))
+        except (json.JSONDecodeError, AttributeError, TypeError) as exc:
+            raise AIError(f"Gemini вернул ответ не в том формате: {exc}") from exc

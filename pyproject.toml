@@ -1,0 +1,12 @@
+[project]
+name = "aa-bot"
+version = "0.1.0"
+description = "Telegram-бот для программы АА с синхронизацией с Notion"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

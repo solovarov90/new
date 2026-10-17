@@ -1,0 +1,16 @@
+[Unit]
+Description=AA recovery bot (Telegram + Notion)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aabot
+WorkingDirectory=/opt/aa-bot
+EnvironmentFile=/opt/aa-bot/.env
+ExecStart=/opt/aa-bot/.venv/bin/python -m aa_bot
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
