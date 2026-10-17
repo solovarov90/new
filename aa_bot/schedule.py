@@ -6,7 +6,6 @@ from datetime import date, datetime, time, timedelta
 
 from . import ui
 from .app import App
-from .notion import read
 
 log = logging.getLogger(__name__)
 
@@ -47,14 +46,11 @@ class Scheduler:
             sorts=[{"property": "Порядок", "direction": "ascending"}],
         )
 
-    async def _praying(self) -> list[dict]:
-        people = await self.app.notion.query(self.app.config.databases.people)
-        return [p for p in people if read(p, "Молитва") == "Молюсь"]
-
     async def morning(self, day: date) -> None:
         app = self.app
         prayers = await self._prayers("Утро")
-        text, keyboard = ui.morning(day, app.config.sobriety_date, prayers, await self._praying())
+        people = await app.notion.query(app.config.databases.people)
+        text, keyboard = ui.morning(day, app.config.sobriety_date, prayers, people)
         await app.syncer.send(app.topics.get("morning"), text, keyboard)
 
     async def evening(self, day: date) -> None:

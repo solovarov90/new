@@ -7,7 +7,7 @@
 import logging
 from datetime import date
 
-from . import entries
+from . import entries, ui
 from . import notion as n
 from .config import Config
 from .notion import Notion, NotionError, read
@@ -186,7 +186,7 @@ class Workspace:
             "today": today.isoformat(),
             "inventory": by_status(inventory, "Статус"),
             "journal": by_status(journal, "Статус"),
-            "praying_now": [read(p, "Имя") for p in people if read(p, "Молитва") == "Молюсь"],
+            "people_prayed_today": ui.people_today(people, today.isoformat()),
             "people": by_status(people, "Молитва"),
             "checkin_today": done_today,
         }

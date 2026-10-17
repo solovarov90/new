@@ -34,40 +34,74 @@ def test_prayer_mark_records_today_and_undo_clears_it():
     assert days == 3 and undo["Последняя молитва"] == n.date(None)
 
 
-def test_start_again_after_two_weeks_resets_counter():
-    props = entries.person_start(person("f1", "Отец", status="Две недели прошли", days=14), TODAY)
-    assert props["Дней подряд"] == n.number(0) and props["Начало"] == n.date(TODAY)
-    paused = entries.person_start(person("f1", "Отец", status="Не начато", days=5), TODAY)
-    assert "Дней подряд" not in paused  # после паузы счёт продолжается
+def test_pause_and_resume_keep_the_counter():
+    assert entries.person_pause(person("f1", "Отец", days=5)) == {"Молитва": n.status("Пауза")}
+    resumed = entries.person_start(person("f1", "Отец", status="Пауза", days=5), TODAY)
+    assert resumed["Молитва"] == n.status("Молюсь") and "Дней подряд" not in resumed
+    veteran = entries.person_start(person("f1", "Отец", status="Пауза", days=20), TODAY)
+    assert veteran["Молитва"] == n.status("Две недели прошли")
 
 
-def test_checklist_shows_today_marks_and_prayer_buttons():
-    people = [
-        person("f1", "Отец", days=4, last=TODAY, created="2026-01-01T00:00:00.000Z"),
-        person("m1", "Мать", days=2, created="2026-01-01T00:01:00.000Z"),
-        person("u1", "Дядя", status="Не начато", created="2026-01-01T00:02:00.000Z"),
-    ]
-    text, keyboard = ui.people_main(people, TODAY)
-    assert "Сегодня: <b>1 из 2</b>" in text
+PEOPLE = [
+    person("f1", "Отец", days=4, last=TODAY, created="2026-01-01T00:00:00.000Z"),
+    person("m1", "Мать", status="Не начато", created="2026-01-01T00:01:00.000Z"),
+    person("u1", "Дядя", status="Две недели прошли", days=15, created="2026-01-01T00:02:00.000Z"),
+    person("s1", "Серёга", status="Пауза", days=3, created="2026-01-01T00:03:00.000Z"),
+]
+
+
+def test_daily_list_is_everyone_except_paused():
+    assert [p["id"] for p in ui.daily_list(PEOPLE)] == ["f1", "m1", "u1"]
+    assert ui.people_today(PEOPLE, TODAY) == (1, 3)
+
+
+def test_checklist_covers_everyone_every_day():
+    text, keyboard = ui.people_main(PEOPLE, TODAY)
+    assert "Сегодня: <b>1 из 3</b>" in text
     labels = [b.text for b in buttons(keyboard)]
-    assert "✅ Отец · 4/14" in labels and "⬜ Мать · 2/14" in labels
-    assert "Дядя" not in " ".join(labels)  # не в ежедневном списке
-    data = [b.callback_data for b in buttons(keyboard)]
-    assert "pp:t:f1" in data and "pp:pr:m1" in data and "pp:prall" in data
+    assert "✅ Отец" in labels and "⬜ Мать" in labels and "⬜ Дядя 🟢" in labels
+    assert not any("Серёга" in label for label in labels)
+    assert "⏸ На паузе · 1" in labels
+    assert "pw:first" in [b.callback_data for b in buttons(keyboard)]
 
 
-def test_pick_list_offers_only_people_not_in_prayer():
-    people = [person("f1", "Отец"), person("u1", "Дядя", status="Не начато")]
-    _text, keyboard = ui.people_pick(people)
-    assert [b.callback_data for b in buttons(keyboard)] == ["pp:s:u1", "pp:m"]
+def test_paused_list_returns_people_to_daily():
+    _text, keyboard = ui.people_pick(PEOPLE)
+    assert [b.callback_data for b in buttons(keyboard)] == ["pp:s:s1", "pp:m"]
 
 
-def test_person_view_buttons_follow_status():
-    _t, kb = ui.person_view(person("f1", "Отец", days=4, last=TODAY), TODAY)
+def test_person_view_pause_or_resume():
+    _t, kb = ui.person_view(PEOPLE[0], TODAY)
     labels = [b.text for b in buttons(kb)]
     assert "↩️ Снять отметку" in labels and "⏸ Пауза" in labels
-    _t, kb = ui.person_view(person("f1", "Отец", status="Две недели прошли", days=14), TODAY)
-    assert "🔁 Начать заново" in [b.text for b in buttons(kb)]
+    _t, kb = ui.person_view(PEOPLE[3], TODAY)
+    assert "▶️ Вернуть в список" in [b.text for b in buttons(kb)]
+
+
+def test_walk_goes_to_next_unprayed_and_wraps_around():
+    daily = ui.daily_list(PEOPLE)
+    assert ui.next_unprayed(daily, TODAY)["id"] == "m1"  # Отец уже отмечен
+    assert ui.next_unprayed(daily, TODAY, after="m1")["id"] == "u1"
+    assert ui.next_unprayed(daily, TODAY, after="u1")["id"] == "m1"  # по кругу
+    everyone = [person("f1", "Отец", last=TODAY), person("m1", "Мать", last=TODAY)]
+    assert ui.next_unprayed(everyone, TODAY) is None
+
+
+def test_walk_screen_has_mark_and_navigation():
+    daily = ui.daily_list(PEOPLE)
+    text, kb = ui.prayer_walk(daily[1], daily, "Боже, помоги Матери", TODAY)
+    assert "2 из 3 · Мать" in text and "Сегодня отмечено: 1 из 3" in text
+    data = [b.callback_data for b in buttons(kb)]
+    assert data == ["pwd:m1", "pw:f1", "pw:u1"]
+
+
+def test_walk_done_lists_who_is_left():
+    daily = ui.daily_list(PEOPLE)
+    text, kb = ui.prayer_walk_done(daily, TODAY)
+    assert "Мать" in text and [b.callback_data for b in buttons(kb)] == ["pw:first"]
+    all_done = [person("f1", "Отец", last=TODAY)]
+    text, _ = ui.prayer_walk_done(all_done, TODAY)
+    assert "На сегодня всё" in text
 
 
 def test_personal_prayer_has_mark_button_per_person():

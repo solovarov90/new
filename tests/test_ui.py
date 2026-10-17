@@ -74,14 +74,18 @@ def test_record_view_navigates_inside_person():
 
 def test_dashboard_shows_checkin_state_and_topic_links():
     checkin = page("c1", **{"Утренняя молитва": ("checkbox", True), "Трезвый день": ("checkbox", False)})
-    father = page("f1", Имя=("title", "Отец"), **{"Дней подряд": ("number", 3)})
+    father = page(
+        "f1", Имя=("title", "Отец"), **{"Молитва": ("status", "Молюсь"), "Последняя молитва": ("date", "2026-10-17")}
+    )
+    mother = page("m1", Имя=("title", "Мать"), Молитва=("status", "Не начато"))
     text, keyboard = ui.dashboard(
-        date(2026, 10, 17), date(2026, 6, 15), checkin, [father], -1003990082908, {"chat": 72, "sos": 9}
+        date(2026, 10, 17), date(2026, 6, 15), checkin, [father, mother], -1003990082908, {"chat": 72, "sos": 9}
     )
     assert "Трезвость: <b>124 дня</b>" in text and "Практики дня: 1 из 6" in text
+    assert "Промаливание: 1 из 2" in text
     labels = [b.text for b in buttons(keyboard)]
     assert "✅ Утренняя молитва" in labels and "⬜ Трезвый день" in labels
-    assert "🙏 Отец 3/14" in labels
+    assert "🙏 Промаливание по очереди · 1/2" in labels
     urls = [b.url for b in buttons(keyboard) if b.url]
     assert "https://t.me/c/3990082908/72" in urls
 

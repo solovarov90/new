@@ -7,7 +7,6 @@ from aiogram.types import InlineKeyboardMarkup
 
 from . import ui
 from .app import App
-from .notion import read
 from .sync import digest
 
 log = logging.getLogger(__name__)
@@ -38,9 +37,8 @@ class Panels:
             dbs.checkin, filter={"property": "Дата", "date": {"equals": today.isoformat()}}
         )
         people = await app.notion.query(dbs.people)
-        praying = [p for p in people if read(p, "Молитва") == "Молюсь"]
         return ui.dashboard(
-            today, app.config.sobriety_date, checkin[0] if checkin else None, praying, app.config.chat_id, app.topics
+            today, app.config.sobriety_date, checkin[0] if checkin else None, people, app.config.chat_id, app.topics
         )
 
     async def inventory_main_view(self) -> tuple[str, InlineKeyboardMarkup]:

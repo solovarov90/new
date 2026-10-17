@@ -471,6 +471,53 @@ def build_router(app: App, panels: Panels) -> Router:
         app.state.set(key, text)
         return text
 
+    async def show_walk(query: CallbackQuery, target: str | None, new_message: bool) -> None:
+        """Молитва с именем для target (или итог, если target None) в том же сообщении или в новом."""
+        today = app.today().isoformat()
+        people = await panels.people_pages()
+        daily = ui.daily_list(people)
+        page = next((p for p in people if ui.pid(p["id"]) == ui.pid(target)), None) if target else None
+        if page is None:
+            text, keyboard = ui.prayer_walk_done(daily, today)
+        else:
+            prayer = await named_prayer([read(page, "Имя") or ""])
+            text, keyboard = ui.prayer_walk(page, daily, prayer, today)
+            # Пока человек молится, готовим молитву для следующего, чтобы «дальше» открывалось сразу.
+            upcoming = ui.next_unprayed(daily, today, after=ui.pid(page["id"]))
+            if upcoming is not None:
+                app.run_background(named_prayer([read(upcoming, "Имя") or ""]))
+        if new_message:
+            await app.bot.send_message(cfg.chat_id, text, message_thread_id=thread_of(query), reply_markup=keyboard)
+        else:
+            await app.syncer.edit_message(query.message.message_id, text, keyboard, pause=False)
+
+    @router.callback_query(F.data.startswith("pw"))
+    async def on_prayer_walk(query: CallbackQuery) -> None:
+        if not await allowed(query):
+            return
+        action, _, arg = query.data.partition(":")
+        today = app.today().isoformat()
+        if action == "pwd":
+            page, days, already = await mark_prayed(arg)
+            if already:
+                await query.answer()
+            else:
+                await prayed_answer(query, page, days, already)
+            daily = ui.daily_list(await panels.people_pages())
+            upcoming = ui.next_unprayed(daily, today, after=ui.pid(arg))
+            await show_walk(query, upcoming["id"] if upcoming else None, new_message=False)
+            app.run_background(panels.refresh_people())
+            app.run_background(panels.refresh_dashboard())
+            return
+        await query.answer()
+        if arg == "first":
+            # Из пульта, утра и меню проход открывается новым сообщением, закреплённые не трогаем.
+            daily = ui.daily_list(await panels.people_pages())
+            upcoming = ui.next_unprayed(daily, today)
+            await show_walk(query, upcoming["id"] if upcoming else None, new_message=True)
+        else:
+            await show_walk(query, arg, new_message=False)
+
     # --- кнопки: меню промаливания ---------------------------------------------
 
     @router.callback_query(F.data.startswith("pp:"))
@@ -493,14 +540,13 @@ def build_router(app: App, panels: Panels) -> Router:
                 {"mode": "person"},
             )
             return
-        if action in ("pr", "prall"):
+        if action == "pr":
             await query.answer("Готовлю молитву…")
-            if action == "pr":
-                person = await app.notion.get_page(arg)
-                names = [(person["id"], read(person, "Имя") or "")]
-            else:
-                people = await panels.people_pages()
-                names = [(p["id"], read(p, "Имя") or "") for p in people if read(p, "Молитва") == entries.PRAYING]
+            await show_walk(query, arg, new_message=True)
+            return
+        if action == "prall":
+            await query.answer("Готовлю молитву…")
+            names = [(p["id"], read(p, "Имя") or "") for p in ui.daily_list(await panels.people_pages())]
             if not names:
                 return
             text, keyboard = ui.personal_prayer(names, await named_prayer([name for _id, name in names]))
@@ -521,13 +567,13 @@ def build_router(app: App, panels: Panels) -> Router:
         elif action == "s":
             page = await app.notion.get_page(arg)
             await app.notion.update_page(arg, entries.person_start(page, today))
-            await query.answer(f"▶️ Молюсь за {read(page, 'Имя')}")
+            await query.answer(f"▶️ {read(page, 'Имя')} снова в ежедневном списке")
             action = "v" if on_person else "m"
             app.run_background(panels.refresh_dashboard())
         elif action == "x":
             page = await app.notion.get_page(arg)
             await app.notion.update_page(arg, entries.person_pause(page))
-            await query.answer("⏸ Пауза, счётчик сохранён")
+            await query.answer("⏸ На паузе, счётчик сохранён")
             action = "v"
             app.run_background(panels.refresh_dashboard())
         else:
