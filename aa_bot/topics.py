@@ -18,6 +18,7 @@ class Topic:
 
 
 TOPICS = (
+    Topic("chat", "💬 Помощник", 0x8EEE98),
     Topic("morning", "☀️ Утро", 0xFFD67E),
     Topic("prayers", "🙏 Молитвы", 0x6FB9F0),
     Topic("people", "👥 Промаливание", 0xCB86DB),

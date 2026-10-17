@@ -80,6 +80,13 @@ class Notion:
     async def get_page(self, page_id: str) -> dict:
         return await self._request("GET", f"/pages/{page_id}")
 
+    async def get_database(self, database_id: str) -> dict:
+        return await self._request("GET", f"/databases/{database_id}")
+
+    async def archive_page(self, page_id: str) -> dict:
+        """Переносит страницу в корзину Notion. Оттуда её можно восстановить в течение 30 дней."""
+        return await self._request("PATCH", f"/pages/{page_id}", {"archived": True})
+
     async def page_text(self, page_id: str) -> str:
         lines, cursor = [], None
         while True:

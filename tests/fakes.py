@@ -21,9 +21,10 @@ def prop(kind: str, value):
     return {"type": kind, kind: value}
 
 
-def page(page_id: str, edited: str = "2026-01-01T00:00:00.000Z", **props) -> dict:
+def page(page_id: str, edited: str = "2026-01-01T00:00:00.000Z", parent: str = "", **props) -> dict:
     return {
         "id": page_id,
+        "parent": {"database_id": parent},
         "url": f"https://www.notion.so/{page_id}",
         "created_time": "2026-01-01T00:00:00.000Z",
         "last_edited_time": edited,
@@ -32,10 +33,33 @@ def page(page_id: str, edited: str = "2026-01-01T00:00:00.000Z", **props) -> dic
 
 
 class FakeNotion:
-    def __init__(self, databases: dict[str, list[dict]], bodies: dict[str, str] | None = None):
+    def __init__(
+        self,
+        databases: dict[str, list[dict]],
+        bodies: dict[str, str] | None = None,
+        schemas: dict[str, dict] | None = None,
+    ):
         self.databases = databases
         self.bodies = bodies or {}
+        self.schemas = schemas or {}
         self.created: list[tuple[str, dict, str | None]] = []
+        self.updated: list[tuple[str, dict]] = []
+        self.archived: list[str] = []
+        self.appended: list[tuple[str, str]] = []
+
+    async def get_database(self, database_id):
+        return {"properties": self.schemas[database_id]}
+
+    async def update_page(self, page_id, properties):
+        self.updated.append((page_id, properties))
+        return await self.get_page(page_id)
+
+    async def archive_page(self, page_id):
+        self.archived.append(page_id)
+        return {}
+
+    async def append_text(self, page_id, text):
+        self.appended.append((page_id, text))
 
     async def query(self, database_id, filter=None, sorts=None):
         return [dict(p) for p in self.databases.get(database_id, [])]

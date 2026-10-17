@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, Message, User
 
 from . import entries, render, texts
 from . import notion as n
+from .agent import split_message, to_html
 from .ai import AIError, Analysis
 from .app import App
 from .notion import NotionError, read
@@ -19,6 +20,15 @@ from .topics import ensure_topics
 log = logging.getLogger(__name__)
 
 STORY_TOPICS = ("review", "inventory", "evening", "morning")
+# None — общая тема группы (General): там тоже можно просто разговаривать.
+CHAT_TOPICS = ("chat", None)
+CARD_COLLECTIONS = {
+    "prayer": "prayers",
+    "practice": "practices",
+    "person": "people",
+    "inventory": "inventory",
+    "journal": "journal",
+}
 
 
 class UserFacingError(RuntimeError):
@@ -85,6 +95,12 @@ def build_router(app: App) -> Router:
         if is_owner(message.from_user):
             await message.reply(texts.sos(cfg.sponsor_contact))
 
+    @router.message(Command("new"))
+    async def cmd_new(message: Message) -> None:
+        if is_owner(message.from_user) and app.agent is not None:
+            app.agent.reset()
+            await message.reply("🧹 Начинаю разговор заново. Записи в Notion остались как были.")
+
     # --- сообщения в темах -----------------------------------------------------
 
     @router.message(F.chat.id == cfg.chat_id)
@@ -97,6 +113,10 @@ def build_router(app: App) -> Router:
             card = app.state.card_by_message(reply.message_id) if reply else None
             if card and card.kind == "journal":
                 await continue_entry(message, card)
+            elif card:
+                await talk(message, card)
+            elif topic in CHAT_TOPICS:
+                await talk(message)
             elif topic == "sos":
                 await message.reply(texts.sos(cfg.sponsor_contact))
             elif topic == "prayers" and message.text:
@@ -110,6 +130,31 @@ def build_router(app: App) -> Router:
         except NotionError:
             log.exception("Ошибка Notion")
             await message.reply("⚠️ Notion сейчас не ответил. Сообщение здесь сохранилось, попробуйте ещё раз позже.")
+
+    async def talk(message: Message, card: Card | None = None) -> None:
+        if app.agent is None:
+            raise UserFacingError("Чтобы разговаривать, добавьте GEMINI_API_KEY в настройки бота.")
+        if not (message.text or _audio(message)):
+            return
+        await app.bot.send_chat_action(cfg.chat_id, "typing", message_thread_id=message.message_thread_id)
+        text, _kind = await story_of(message)
+        context = None
+        if card:
+            collection = CARD_COLLECTIONS.get(card.kind, card.kind)
+            context = f"[Ответ на карточку из базы {collection}, id записи {card.page_id}]"
+        async with app.agent_lock:
+            try:
+                reply = await app.agent.reply(text, app.now(), context)
+            except AIError as exc:
+                raise UserFacingError(str(exc)) from exc
+        for chunk in split_message(reply.text):
+            try:
+                await message.reply(to_html(chunk))
+            except TelegramBadRequest:
+                await message.reply(chunk, parse_mode=None)
+        if reply.changed:
+            # Карточки в темах обновятся сразу, не дожидаясь следующей минуты.
+            app.run_background(app.syncer.sync_once())
 
     async def story_of(message: Message) -> tuple[str, str]:
         if message.text:

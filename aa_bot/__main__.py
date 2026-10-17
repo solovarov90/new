@@ -7,7 +7,9 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
+from google import genai
 
+from .agent import Agent
 from .ai import Assistant
 from .app import App
 from .config import load_config
@@ -17,6 +19,7 @@ from .schedule import Scheduler
 from .state import State
 from .sync import Syncer
 from .topics import ensure_topics
+from .workspace import Workspace
 
 log = logging.getLogger("aa_bot")
 
@@ -41,12 +44,16 @@ async def main() -> None:
                 exc.message,
             )
 
-    assistant = Assistant(cfg.gemini_api_key, cfg.gemini_model) if cfg.gemini_api_key else None
-    if assistant is None:
-        log.warning("GEMINI_API_KEY не задан: голосовые не расшифровываются, тексты сохраняются без разбора")
+    assistant = agent = None
+    if cfg.gemini_api_key:
+        client = genai.Client(api_key=cfg.gemini_api_key)
+        assistant = Assistant(cfg.gemini_api_key, cfg.gemini_model, client)
+        agent = Agent(client, cfg.gemini_model, Workspace(notion, cfg), state, cfg)
+    else:
+        log.warning("GEMINI_API_KEY не задан: нет разговора, голосовые не расшифровываются")
 
     syncer = Syncer(bot, cfg.chat_id, notion, cfg.databases, state, topics)
-    app = App(cfg, bot, notion, state, syncer, assistant, topics)
+    app = App(cfg, bot, notion, state, syncer, assistant, topics, agent)
     dispatcher = Dispatcher()
     dispatcher.include_router(build_router(app))
 
