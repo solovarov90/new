@@ -119,9 +119,9 @@ def journal(page: dict, _body: str = "") -> tuple[str, InlineKeyboardMarkup | No
         _field("Следующий шаг", read(page, "Следующий шаг")),
         _field("Уточнить", read(page, "Уточнить")),
         _field("Статус", current),
-        "<i>Ответь на это сообщение голосом или текстом, чтобы дописать разбор.</i>",
         page=page,
     )
     if current == "Внесён в инвентаризацию":
         return text, None
-    return text, _buttons([("➕ В инвентаризацию", f"inv:{page['id']}")])
+    work = [] if current == "Разобран" else [("✏️ Дописать", f"jed:{page['id']}"), ("✅ Разобран", f"jok:{page['id']}")]
+    return text, _buttons(work, [("➕ В 4 шаг", f"inv:{page['id']}")])

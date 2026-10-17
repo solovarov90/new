@@ -93,7 +93,8 @@ def test_cards_escape_html_and_fit_telegram_limit():
     entry = page("j1", Ситуация=("title", "<b>не тег</b>"), Моя_роль=("rich_text", "x"))
     text, keyboard = render.journal(entry)
     assert "&lt;b&gt;не тег&lt;/b&gt;" in text
-    assert keyboard.inline_keyboard[0][0].callback_data == "inv:j1"
+    buttons = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+    assert buttons == ["jed:j1", "jok:j1", "inv:j1"]
 
     huge = page("p1", Название=("title", "Длинная"))
     text, _ = render.prayer(huge, "слово " * 2000)

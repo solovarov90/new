@@ -7,7 +7,7 @@
 import asyncio
 import hashlib
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -46,9 +46,10 @@ SPECS = (
     Spec("prayer", "prayers", "prayers", render.prayer, with_body=True),
     Spec("practice", "practices", "practices", render.practice),
     Spec("person", "people", "people", render.person),
-    Spec("inventory", "inventory", "inventory", render.inventory),
     Spec("journal", "journal", "review", render.journal),
 )
+# Раньше обиды были отдельными карточками, теперь их заменило меню 4 шага (panels.py).
+RETIRED = {"inventory": "📝 <i>Обиды теперь в меню, закреплённом вверху этой темы.</i>"}
 
 
 def digest(text: str, keyboard: InlineKeyboardMarkup | None) -> str:
@@ -82,6 +83,8 @@ class Syncer:
         # Весь проход держит _run_lock, иначе кнопки ждали бы минуты во время первого переноса.
         self.lock = asyncio.Lock()
         self._run_lock = asyncio.Lock()
+        # Что сделать после каждого прохода (например, обновить пульт дня).
+        self.after_sync: list[Callable[[], Awaitable[None]]] = []
 
     async def run_forever(self, interval: int) -> None:
         while True:
@@ -95,6 +98,10 @@ class Syncer:
     async def sync_once(self) -> dict[str, int]:
         totals = {"new": 0, "edited": 0, "removed": 0}
         async with self._run_lock:
+            for kind, note in RETIRED.items():
+                for card in self.state.cards(kind):
+                    async with self.lock:
+                        await self.remove(card, note)
             for spec in SPECS:
                 try:
                     counts = await self._sync_spec(spec)
@@ -103,6 +110,8 @@ class Syncer:
                     continue
                 for key, value in counts.items():
                     totals[key] += value
+            for hook in self.after_sync:
+                await hook()
         return totals
 
     async def _sync_spec(self, spec: Spec) -> dict[str, int]:
@@ -170,30 +179,35 @@ class Syncer:
 
     async def edit(self, card: Card, text: str, keyboard: InlineKeyboardMarkup | None) -> bool:
         """Правит карточку. False, если сообщения больше нет и карточку нужно отправить заново."""
+        return await self.edit_message(card.message_id, text, keyboard)
+
+    async def edit_message(
+        self, message_id: int, text: str, keyboard: InlineKeyboardMarkup | None, pause: bool = True
+    ) -> bool:
+        """Правит сообщение. pause=False для ответа на нажатие кнопки, чтобы экран менялся сразу."""
         while True:
             try:
                 await self.bot.edit_message_text(
-                    text=text, chat_id=self.chat_id, message_id=card.message_id, reply_markup=keyboard
+                    text=text, chat_id=self.chat_id, message_id=message_id, reply_markup=keyboard
                 )
-                await asyncio.sleep(self.pause)
+                if pause:
+                    await asyncio.sleep(self.pause)
                 return True
             except TelegramRetryAfter as exc:
                 await asyncio.sleep(exc.retry_after + 1)
             except TelegramBadRequest as exc:
                 if "not modified" in exc.message:
                     return True
-                log.info("Карточка %s не редактируется (%s), отправляю заново", card.page_id, exc.message)
+                log.info("Сообщение %s не редактируется: %s", message_id, exc.message)
                 return False
 
-    async def remove(self, card: Card) -> None:
+    async def remove(self, card: Card, note: str = "🗑 <i>Удалено в Notion</i>") -> None:
         try:
             await self.bot.delete_message(self.chat_id, card.message_id)
         except TelegramBadRequest:
-            # Бот не может удалять свои сообщения старше 48 часов, тогда помечаем карточку.
+            # Бот не может удалять свои сообщения старше 48 часов, тогда оставляет пометку.
             try:
-                await self.bot.edit_message_text(
-                    text="🗑 <i>Удалено в Notion</i>", chat_id=self.chat_id, message_id=card.message_id
-                )
+                await self.bot.edit_message_text(text=note, chat_id=self.chat_id, message_id=card.message_id)
             except TelegramBadRequest:
                 pass
         self.state.drop_card(card.page_id)

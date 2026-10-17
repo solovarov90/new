@@ -108,3 +108,19 @@ async def test_card_of_page_created_during_sync_is_kept(setup):
     notion.databases["other"] = [entry]
     totals = await syncer.sync_once()
     assert totals["removed"] == 0 and 777 not in bot.deleted
+
+
+async def test_old_inventory_cards_are_removed_and_hooks_run(setup):
+    _notion, bot, syncer = setup
+    from aa_bot.state import Card
+
+    syncer.state.save_card(Card("old", "inventory", 14, 4242, OLD, "x"))
+    calls = []
+
+    async def hook():
+        calls.append(1)
+
+    syncer.after_sync.append(hook)
+    await syncer.sync_once()
+    assert 4242 in bot.deleted and syncer.state.cards("inventory") == []
+    assert calls == [1]

@@ -86,6 +86,7 @@ class FakeBot:
         self.edited: list[dict] = []
         self.deleted: list[int] = []
         self.missing: set[int] = set()
+        self.pinned: list[int] = []
 
     async def send_message(self, chat_id, text, message_thread_id=None, reply_markup=None):
         message_id = next(self.ids)
@@ -99,3 +100,6 @@ class FakeBot:
 
     async def delete_message(self, chat_id, message_id):
         self.deleted.append(message_id)
+
+    async def pin_chat_message(self, chat_id, message_id, disable_notification=None):
+        self.pinned.append(message_id)
