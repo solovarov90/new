@@ -16,13 +16,13 @@ def prayer(page_id="p1", name="Молитва о начале дня", edited=OL
     return page(page_id, edited, Название=("title", name), Когда=("select", "Утро"), Порядок=("number", order))
 
 
-def person(page_id="h1", name="Отец", edited=OLD):
-    return page(page_id, edited, Имя=("title", name), Молитва=("status", "Не начато"))
+def practice(page_id="h1", name="Вечерний итог", edited=OLD):
+    return page(page_id, edited, Практика=("title", name), Активна=("checkbox", True))
 
 
 @pytest.fixture
 def setup(tmp_path):
-    notion = FakeNotion({"pr": [prayer()], "ppl": [person()]}, bodies={"p1": "Боже, направь мои мысли"})
+    notion = FakeNotion({"pr": [prayer()], "pc": [practice()]}, bodies={"p1": "Боже, направь мои мысли"})
     bot = FakeBot()
     syncer = Syncer(bot, -100, notion, DBS, State(str(tmp_path / "s.db")), dict(TOPICS), pause=0)
     return notion, bot, syncer
@@ -34,8 +34,7 @@ async def test_first_sync_posts_each_page_to_its_topic(setup):
     assert totals == {"new": 2, "edited": 0, "removed": 0}
     by_thread = {m["thread"]: m for m in bot.sent}
     assert "Боже, направь мои мысли" in by_thread[11]["text"]
-    assert "Отец" in by_thread[13]["text"]
-    assert by_thread[13]["keyboard"].inline_keyboard[0][0].callback_data == "pray:h1"
+    assert "Вечерний итог" in by_thread[12]["text"]
 
 
 async def test_second_sync_without_changes_does_nothing(setup):
@@ -66,11 +65,11 @@ async def test_touched_page_with_same_content_is_not_edited(setup):
 async def test_page_removed_in_notion_is_removed_from_telegram(setup):
     notion, bot, syncer = setup
     await syncer.sync_once()
-    sent_person = next(m for m in bot.sent if m["thread"] == 13)
-    notion.databases["ppl"] = []
+    sent_practice = next(m for m in bot.sent if m["thread"] == 12)
+    notion.databases["pc"] = []
     totals = await syncer.sync_once()
     assert totals["removed"] == 1
-    assert bot.deleted == [sent_person["id"]]
+    assert bot.deleted == [sent_practice["id"]]
 
 
 async def test_card_deleted_in_telegram_is_sent_again(setup):

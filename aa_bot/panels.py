@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 DASHBOARD = "panel:dashboard"
 INVENTORY = "panel:inventory"
+PEOPLE = "panel:people"
 
 
 def view_key(message_id: int) -> str:
@@ -45,6 +46,12 @@ class Panels:
     async def inventory_main_view(self) -> tuple[str, InlineKeyboardMarkup]:
         return ui.inventory_main(await self.inventory_pages())
 
+    async def people_pages(self) -> list[dict]:
+        return await self.app.notion.query(self.app.config.databases.people)
+
+    async def people_main_view(self) -> tuple[str, InlineKeyboardMarkup]:
+        return ui.people_main(await self.people_pages(), self.app.today().isoformat())
+
     # --- закрепление ---------------------------------------------------------------
 
     async def _pin(self, message_id: int) -> None:
@@ -73,6 +80,8 @@ class Panels:
             await self.post_pinned(DASHBOARD, "chat", *await self.dashboard_view())
         if "inventory" in self.app.topics and not self.app.state.get(INVENTORY):
             await self.post_pinned(INVENTORY, "inventory", *await self.inventory_main_view())
+        if "people" in self.app.topics and not self.app.state.get(PEOPLE):
+            await self.post_pinned(PEOPLE, "people", *await self.people_main_view())
 
     # --- обновление ----------------------------------------------------------------
 
@@ -91,17 +100,21 @@ class Panels:
         if "chat" in self.app.topics:
             await self._refresh(DASHBOARD, "chat", *await self.dashboard_view())
 
+    def _browsing(self, key: str) -> bool:
+        """В меню сейчас открыт не главный экран, его не сбрасываем."""
+        stored = self.app.state.get(key)
+        return bool(stored and self.app.state.get(view_key(int(stored))))
+
     async def refresh_inventory(self) -> None:
-        stored = self.app.state.get(INVENTORY)
-        if "inventory" not in self.app.topics:
-            return
-        # Если в меню сейчас открыта обида или список человека, не сбрасываем экран.
-        if stored and self.app.state.get(view_key(int(stored))):
-            return
-        await self._refresh(INVENTORY, "inventory", *await self.inventory_main_view())
+        if "inventory" in self.app.topics and not self._browsing(INVENTORY):
+            await self._refresh(INVENTORY, "inventory", *await self.inventory_main_view())
+
+    async def refresh_people(self) -> None:
+        if "people" in self.app.topics and not self._browsing(PEOPLE):
+            await self._refresh(PEOPLE, "people", *await self.people_main_view())
 
     async def refresh_all(self) -> None:
-        for refresh in (self.refresh_dashboard, self.refresh_inventory):
+        for refresh in (self.refresh_dashboard, self.refresh_inventory, self.refresh_people):
             try:
                 await refresh()
             except Exception:

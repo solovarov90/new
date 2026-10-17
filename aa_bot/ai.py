@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 from google import genai
@@ -88,8 +89,42 @@ ANALYSIS_SCHEMA = {
 }
 
 
+PERSONALIZE_PROMPT = """Перед тобой текст молитвы. Подставь вместо «(имя)» {who}, поставив в падеж, \
+который нужен по смыслу фразы. Если имён несколько, перечисли их через запятую, тоже в нужном падеже. \
+Больше ничего в тексте не меняй: ни слов, ни порядка, ни знаков препинания, ни переносов строк. \
+Верни только итоговый текст молитвы.
+
+Молитва:
+{template}"""
+
+NAME_PLACEHOLDER = re.compile(r"\(\s*имя\s*\)", re.IGNORECASE)
+
+
 class AIError(RuntimeError):
     pass
+
+
+def has_name_placeholder(text: str) -> bool:
+    return bool(NAME_PLACEHOLDER.search(text or ""))
+
+
+def keeps_text(template: str, result: str) -> bool:
+    """Весь текст молитвы вокруг «(имя)» сохранился дословно и в том же порядке."""
+    position = 0
+    for part in NAME_PLACEHOLDER.split(template):
+        part = part.strip()
+        if not part:
+            continue
+        found = result.find(part, position)
+        if found < 0:
+            return False
+        position = found + len(part)
+    return True
+
+
+def fill_name(template: str, names: str) -> str:
+    """Простая подстановка без склонения: запасной вариант, если Gemini недоступен."""
+    return NAME_PLACEHOLDER.sub(names, template)
 
 
 @dataclass
@@ -152,6 +187,19 @@ class Assistant:
         result = (response.text or "").strip()
         if not result:
             raise AIError("Gemini вернул пустую расшифровку")
+        return result
+
+    async def personalize(self, template: str, names: str) -> str:
+        """Подставляет имя в молитву в правильном падеже. Если текст изменился сильнее, чем нужно, это ошибка."""
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self._model, contents=PERSONALIZE_PROMPT.format(who=names, template=template)
+            )
+        except errors.APIError as exc:
+            raise AIError(f"Gemini не подставил имя: {exc}") from exc
+        result = (response.text or "").strip()
+        if not result or has_name_placeholder(result) or not keeps_text(template, result):
+            raise AIError("Gemini изменил текст молитвы")
         return result
 
     async def analyze(self, story: str, known_people: list[str]) -> Analysis:

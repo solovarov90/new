@@ -135,6 +135,12 @@ class Workspace:
 
     async def mark_prayed(self, person_id: str, today: date) -> dict:
         page = await self.notion.get_page(person_id)
+        if entries.prayed_today(page, today.isoformat()):
+            return {
+                "person": read(page, "Имя"),
+                "already_marked_today": True,
+                "days": int(read(page, "Дней подряд") or 0),
+            }
         props, days = entries.person_after_prayer(page, today.isoformat())
         page = await self.notion.update_page(person_id, props)
         return {"person": read(page, "Имя"), "days": days, "goal": 14}

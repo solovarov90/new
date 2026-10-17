@@ -2,7 +2,7 @@ from datetime import date
 from types import SimpleNamespace
 
 from aa_bot.config import Databases
-from aa_bot.panels import DASHBOARD, INVENTORY, Panels, view_key
+from aa_bot.panels import DASHBOARD, INVENTORY, PEOPLE, Panels, view_key
 from aa_bot.state import State
 from aa_bot.sync import Syncer
 
@@ -17,7 +17,7 @@ def make(tmp_path):
     )
     bot = FakeBot()
     state = State(str(tmp_path / "s.db"))
-    topics = {"chat": 72, "inventory": 14, "prayers": 11}
+    topics = {"chat": 72, "inventory": 14, "prayers": 11, "people": 13}
     syncer = Syncer(bot, -100, notion, DBS, state, topics, pause=0)
     config = SimpleNamespace(
         databases=DBS, chat_id=-100, sobriety_date=date(2026, 6, 15), morning_time="06:30", evening_time="22:30"
@@ -39,6 +39,7 @@ async def test_ensure_posts_and_pins_panels_once(tmp_path):
     await panels.ensure()
     first = len(bot.sent)
     assert app.state.get(DASHBOARD) and app.state.get(INVENTORY) and app.state.get("intro:prayers")
+    assert app.state.get(PEOPLE) and not app.state.get("intro:people")
     assert len(bot.pinned) == first
     await panels.ensure()
     assert len(bot.sent) == first

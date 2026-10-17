@@ -39,8 +39,6 @@ INTROS = {
     "Можно наговорить сюда намерение на день.",
     "prayers": "🙏 <b>Молитвы</b>\nВсе молитвы из Notion. Чтобы добавить новую, напиши её сюда: "
     "первая строка станет названием.",
-    "people": "👥 <b>Промаливание</b>\nКарточки людей. «🙏 Помолился сегодня» считает дни до 14. "
-    "Чтобы добавить человека, напиши сюда его имя.",
     "review": "🎙 <b>Разбор ситуаций</b>\nНаговори или напиши, что случилось. Я разложу по схеме 4 шага "
     "и запишу в журнал. Под карточкой разбора: «✏️ Дописать», «✅ Разобран», «➕ В инвентаризацию».",
     "practices": "🧭 <b>Практики</b>\nЧто я делаю утром, днём и вечером. Правится в Notion или через помощника.",
@@ -225,3 +223,123 @@ def evening(prayers: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
 
 def prayer_list(prayers: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
     return "📖 <b>Какую молитву открыть?</b>", _kb(prayer_buttons(prayers))
+
+
+# --- промаливание ---------------------------------------------------------------
+
+PERSON_ICON = {"Молюсь": "🔵", "Две недели прошли": "🟢", "Не начато": "⚪"}
+
+
+def _by_created(pages: list[dict]) -> list[dict]:
+    return sorted(pages, key=lambda p: p["created_time"])
+
+
+def _days(page: dict) -> int:
+    return int(read(page, "Дней подряд") or 0)
+
+
+def _prayed(page: dict, today: str) -> bool:
+    return (read(page, "Последняя молитва") or "")[:10] == today
+
+
+def progress(days: int) -> str:
+    days = min(days, PRAYER_GOAL_DAYS)
+    return "🟩" * days + "⬜" * (PRAYER_GOAL_DAYS - days) + f" {days}/{PRAYER_GOAL_DAYS}"
+
+
+def people_main(people: list[dict], today: str) -> tuple[str, InlineKeyboardMarkup]:
+    praying = [p for p in _by_created(people) if read(p, "Молитва") == "Молюсь"]
+    done = sum(1 for p in people if read(p, "Молитва") == "Две недели прошли")
+    lines = [
+        "👥 <b>Промаливание</b>",
+        "Прошу для каждого всего того хорошего, чего хочу себе. 14 дней подряд.",
+        "",
+    ]
+    if praying:
+        marked = sum(1 for p in praying if _prayed(p, today))
+        lines.append(f"Сегодня: <b>{marked} из {len(praying)}</b>. Нажми на имя, когда помолишься.")
+    else:
+        lines.append("Сейчас ни за кого не молюсь. Нажми «➕ Начать молиться за…».")
+    lines.append(f"\nЗавершено: {done} · всего людей: {len(people)}")
+    rows = []
+    for page in praying:
+        mark = "✅" if _prayed(page, today) else "⬜"
+        name = _short(read(page, "Имя") or "", 24)
+        rows.append(
+            [
+                _cb(f"{mark} {name} · {_days(page)}/{PRAYER_GOAL_DAYS}", f"pp:t:{pid(page['id'])}"),
+                _cb("📖", f"pp:pr:{pid(page['id'])}"),
+            ]
+        )
+    if len(praying) > 1:
+        rows.append([_cb("📖 Одна молитва за всех", "pp:prall")])
+    rows.append([_cb("➕ Начать молиться за…", "pp:add"), _cb("👥 Все люди", "pp:all")])
+    rows.append([_cb("✍️ Добавить человека", "pp:new")])
+    return "\n".join(lines), _kb(rows)
+
+
+def people_all(people: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
+    text = f"👥 <b>Все люди</b> · {len(people)}\n🔵 молюсь · 🟢 две недели прошли · ⚪ не начато\n\nВыбери человека:"
+    buttons = []
+    for page in _by_created(people):
+        icon = PERSON_ICON.get(read(page, "Молитва") or "Не начато", "⚪")
+        days = _days(page)
+        suffix = f" {days}/{PRAYER_GOAL_DAYS}" if days else ""
+        buttons.append(_cb(f"{icon} {_short(read(page, 'Имя') or '', 22)}{suffix}", f"pp:v:{pid(page['id'])}"))
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([_cb("🏠 Сегодня", "pp:m"), _cb("✍️ Добавить человека", "pp:new")])
+    return text, _kb(rows)
+
+
+def people_pick(people: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
+    candidates = [p for p in _by_created(people) if read(p, "Молитва") != "Молюсь"]
+    text = "➕ <b>За кого начать молиться?</b>"
+    if not candidates:
+        text += "\nСейчас ты молишься за всех из списка."
+    buttons = [
+        _cb(
+            f"{PERSON_ICON.get(read(p, 'Молитва') or 'Не начато', '⚪')} {_short(read(p, 'Имя') or '', 22)}",
+            f"pp:s:{pid(p['id'])}",
+        )
+        for p in candidates
+    ]
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([_cb("⬅️ Назад", "pp:m")])
+    return text, _kb(rows)
+
+
+def person_view(page: dict, today: str) -> tuple[str, InlineKeyboardMarkup]:
+    name = read(page, "Имя") or "Без имени"
+    status = read(page, "Молитва") or "Не начато"
+    prayed = _prayed(page, today)
+    lines = [
+        f"👥 <b>{escape(name)}</b>",
+        f"{PERSON_ICON.get(status, '⚪')} {escape(status)}",
+        progress(_days(page)),
+        f"Сегодня: {'✅ помолился' if prayed else '⬜ ещё нет'}",
+    ]
+    for label in ("Начало", "Категория", "В таблице обид как", "Заметки"):
+        value = read(page, label)
+        if value:
+            lines.append(f"<b>{label}:</b> {escape(_short(str(value), 300))}")
+    lines.append("\n<i>Ответь на это сообщение, чтобы что-то поправить словами.</i>")
+    page_id = pid(page["id"])
+    if status == "Молюсь":
+        switch = _cb("⏸ Пауза", f"pp:x:{page_id}")
+    elif status == "Две недели прошли":
+        switch = _cb("🔁 Начать заново", f"pp:s:{page_id}")
+    else:
+        switch = _cb("▶️ Начать молиться", f"pp:s:{page_id}")
+    rows = [
+        [_cb("↩️ Снять отметку" if prayed else "✅ Помолился сегодня", f"pp:t:{page_id}")],
+        [_cb("📖 Молитва с именем", f"pp:pr:{page_id}"), switch],
+        [_cb("⬅️ Все люди", "pp:all"), _cb("🏠 Сегодня", "pp:m")],
+    ]
+    return "\n".join(lines), _kb(rows)
+
+
+def personal_prayer(names: list[tuple[str, str]], text: str) -> tuple[str, InlineKeyboardMarkup]:
+    """Молитва с подставленными именами и кнопки «помолился» для каждого. names: (id, имя)."""
+    title = ", ".join(escape(name) for _id, name in names)
+    buttons = [_cb(f"✅ Помолился за {_short(name, 24)}", f"pray:{pid(page_id)}") for page_id, name in names]
+    return f"🙏 <b>За: {title}</b>\n\n{escape(text)}", _kb([[b] for b in buttons])

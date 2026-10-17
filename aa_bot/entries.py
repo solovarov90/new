@@ -79,16 +79,48 @@ def person_from_name(name: str) -> dict:
     return {"Имя": n.title(name.strip()[:200]), "Молитва": n.status("Не начато")}
 
 
+LAST_PRAYER = "Последняя молитва"
+PRAYING = "Молюсь"
+DONE = "Две недели прошли"
+NOT_STARTED = "Не начато"
+
+
+def prayed_today(page: dict, today: str) -> bool:
+    return (read(page, LAST_PRAYER) or "")[:10] == today
+
+
 def person_after_prayer(page: dict, today: str) -> tuple[dict, int]:
     """Отметка «помолился сегодня»: счётчик дней растёт, через 14 дней молитва завершена."""
     days = int(read(page, "Дней подряд") or 0) + 1
     props = {
         "Дней подряд": n.number(days),
-        "Молитва": n.status("Две недели прошли" if days >= PRAYER_GOAL_DAYS else "Молюсь"),
+        "Молитва": n.status(DONE if days >= PRAYER_GOAL_DAYS else PRAYING),
+        LAST_PRAYER: n.date(today),
     }
     if not read(page, "Начало"):
         props["Начало"] = n.date(today)
     return props, days
+
+
+def person_undo_prayer(page: dict) -> tuple[dict, int]:
+    """Снимает сегодняшнюю отметку, если нажал по ошибке."""
+    days = max(int(read(page, "Дней подряд") or 0) - 1, 0)
+    return {"Дней подряд": n.number(days), "Молитва": n.status(PRAYING), LAST_PRAYER: n.date(None)}, days
+
+
+def person_start(page: dict, today: str) -> dict:
+    """Начать (или начать заново после завершённых двух недель) молитву за человека."""
+    props = {"Молитва": n.status(PRAYING)}
+    if read(page, "Молитва") == DONE:
+        props.update({"Дней подряд": n.number(0), "Начало": n.date(today), LAST_PRAYER: n.date(None)})
+    elif not read(page, "Начало"):
+        props["Начало"] = n.date(today)
+    return props
+
+
+def person_pause(page: dict) -> dict:
+    """Пауза: человек уходит из ежедневного списка, счётчик дней сохраняется."""
+    return {"Молитва": n.status(NOT_STARTED)}
 
 
 def checkin_properties(field_key: str) -> dict:

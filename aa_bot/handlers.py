@@ -1,5 +1,6 @@
 """Telegram → Notion: сообщения, голосовые и кнопки владельца."""
 
+import hashlib
 import json
 import logging
 from html import escape
@@ -12,10 +13,10 @@ from aiogram.types import CallbackQuery, ForceReply, Message, User
 from . import entries, render, texts, ui
 from . import notion as n
 from .agent import split_message, to_html
-from .ai import AIError, Analysis
+from .ai import AIError, Analysis, fill_name, has_name_placeholder
 from .app import App
 from .notion import NotionError, read
-from .panels import DASHBOARD, INVENTORY, Panels, view_key
+from .panels import DASHBOARD, INVENTORY, PEOPLE, Panels, view_key
 from .sync import digest
 from .topics import ensure_topics
 
@@ -157,7 +158,9 @@ def build_router(app: App, panels: Panels) -> Router:
             card = app.state.card_by_message(reply.message_id) if reply else None
             if prompt:
                 await answer_prompt(message, json.loads(prompt), reply.message_id)
-            elif view and not view.startswith("person:"):
+            elif view and view.startswith("ppl:") and view != "ppl:list":
+                await talk(message, view[4:], "people")
+            elif view and not view.startswith(("person:", "ppl:")):
                 await talk(message, view, "inventory")
             elif card and card.kind == "journal":
                 await continue_entry(message, card.page_id)
@@ -187,6 +190,8 @@ def build_router(app: App, panels: Panels) -> Router:
             await continue_entry(message, page_id)
         elif mode == "story":
             await new_entry(message)
+        elif mode == "person" and message.text:
+            await add_people(message)
         app.state.delete(prompt_key(prompt_message_id))
         try:
             await app.bot.delete_message(cfg.chat_id, prompt_message_id)
@@ -302,23 +307,22 @@ def build_router(app: App, panels: Panels) -> Router:
 
     async def add_people(message: Message) -> None:
         names = [line.strip() for line in message.text.split("\n") if line.strip()]
-        async with app.syncer.lock:
-            for name in names:
-                page = await app.notion.create_page(db.people, entries.person_from_name(name))
-                text, keyboard = render.person(page)
-                message_id = await app.syncer.send(message.message_thread_id, text, keyboard)
-                app.syncer.remember(page, "person", message.message_thread_id, message_id, text, keyboard)
-        await _delete_quietly(message)
+        for name in names:
+            await app.notion.create_page(db.people, entries.person_from_name(name))
+        await message.reply(
+            f"✍️ Добавил: {escape(', '.join(names))}. Они в меню «👥 Промаливание» → «➕ Начать молиться за…»."
+        )
+        await panels.refresh_people()
 
     async def refresh_card(page: dict, kind: str) -> None:
         """Перерисовывает карточку страницы сразу, не дожидаясь синхронизации. Вызывать под lock."""
-        renderers = {"journal": render.journal, "person": render.person}
+        renderers = {"journal": render.journal}
         text, keyboard = renderers[kind](page, "")
         card = app.state.card(page["id"])
         if card and await app.syncer.edit(card, text, keyboard):
             app.syncer.remember(page, kind, card.thread_id, card.message_id, text, keyboard)
             return
-        thread = app.topics.get({"journal": "review", "person": "people"}[kind])
+        thread = app.topics.get({"journal": "review"}[kind])
         message_id = await app.syncer.send(thread, text, keyboard)
         app.syncer.remember(page, kind, thread, message_id, text, keyboard)
 
@@ -405,33 +409,144 @@ def build_router(app: App, panels: Panels) -> Router:
             await query.answer()
             await app.bot.send_message(cfg.chat_id, texts.sos(cfg.sponsor_contact), message_thread_id=thread_of(query))
 
-    @router.callback_query(F.data.startswith("pray:"))
-    async def on_pray(query: CallbackQuery) -> None:
-        if not await allowed(query):
-            return
-        page_id = query.data.split(":", 1)[1]
+    async def mark_prayed(page_id: str) -> tuple[dict, int, bool]:
+        """Отмечает молитву за человека сегодня. Возвращает страницу, дни и признак «уже было»."""
         today = app.today().isoformat()
-        guard = f"prayed:{page_id.replace('-', '')}:{today}"
-        if app.state.get(guard):
-            await query.answer("Сегодня уже отмечено 🙏")
-            return
         async with app.syncer.lock:
             page = await app.notion.get_page(page_id)
+            if entries.prayed_today(page, today):
+                return page, int(read(page, "Дней подряд") or 0), True
             props, days = entries.person_after_prayer(page, today)
             page = await app.notion.update_page(page_id, props)
-            app.state.set(guard, "1")
-            await refresh_card(page, "person")
         await set_checkin("people", True)
-        if days >= render.PRAYER_GOAL_DAYS:
+        return page, days, False
+
+    async def prayed_answer(query: CallbackQuery, page: dict, days: int, already: bool) -> None:
+        if already:
+            await query.answer("Сегодня уже отмечено 🙏")
+        elif days >= render.PRAYER_GOAL_DAYS:
             await query.answer(
                 f"🙏 Две недели за {read(page, 'Имя')} пройдены. Можно взять следующего.", show_alert=True
             )
         else:
-            await query.answer(f"🙏 День {days} из {render.PRAYER_GOAL_DAYS}")
+            await query.answer(f"🙏 {read(page, 'Имя')}: день {days} из {render.PRAYER_GOAL_DAYS}")
+
+    @router.callback_query(F.data.startswith("pray:"))
+    async def on_pray(query: CallbackQuery) -> None:
+        if not await allowed(query):
+            return
+        page, days, already = await mark_prayed(query.data.split(":", 1)[1])
+        await prayed_answer(query, page, days, already)
+        if already:
+            return
         if app.state.get(DASHBOARD) == str(query.message.message_id):
             await show_dashboard(query)
         else:
             app.run_background(panels.refresh_dashboard())
+        app.run_background(panels.refresh_people())
+
+    async def prayer_template() -> str:
+        """Молитва с «(имя)» из базы: сначала среди молитв «За людей и обиды»."""
+        prayers = await app.notion.query(db.prayers)
+        prayers.sort(key=lambda p: read(p, "Когда") != "За людей и обиды")
+        for prayer in prayers:
+            body = await app.notion.page_text(prayer["id"])
+            if has_name_placeholder(body):
+                return body
+        return texts.DEFAULT_PERSON_PRAYER
+
+    async def named_prayer(names: list[str]) -> str:
+        template = await prayer_template()
+        joined = ", ".join(names)
+        key = "named:" + hashlib.sha1(f"{template}\n{joined}".encode()).hexdigest()
+        cached = app.state.get(key)
+        if cached:
+            return cached
+        text = fill_name(template, joined)
+        if app.assistant is not None:
+            try:
+                text = await app.assistant.personalize(template, joined)
+            except AIError:
+                log.info("Имя подставлено без склонения")
+        app.state.set(key, text)
+        return text
+
+    # --- кнопки: меню промаливания ---------------------------------------------
+
+    @router.callback_query(F.data.startswith("pp:"))
+    async def on_people_menu(query: CallbackQuery) -> None:
+        if not await allowed(query):
+            return
+        _, action, *rest = query.data.split(":")
+        arg = rest[0] if rest else ""
+        message_id = query.message.message_id
+        today = app.today().isoformat()
+        current = app.state.get(view_key(message_id)) or ""
+        on_person = current.startswith("ppl:") and current != "ppl:list"
+
+        if action == "new":
+            await query.answer()
+            await ask(
+                query,
+                "✍️ Напиши имя человека ответом на это сообщение. Можно несколько, каждое с новой строки.",
+                "Имя человека",
+                {"mode": "person"},
+            )
+            return
+        if action in ("pr", "prall"):
+            await query.answer("Готовлю молитву…")
+            if action == "pr":
+                person = await app.notion.get_page(arg)
+                names = [(person["id"], read(person, "Имя") or "")]
+            else:
+                people = await panels.people_pages()
+                names = [(p["id"], read(p, "Имя") or "") for p in people if read(p, "Молитва") == entries.PRAYING]
+            if not names:
+                return
+            text, keyboard = ui.personal_prayer(names, await named_prayer([name for _id, name in names]))
+            await app.bot.send_message(cfg.chat_id, text, message_thread_id=thread_of(query), reply_markup=keyboard)
+            return
+
+        if action == "t":
+            page = await app.notion.get_page(arg)
+            if entries.prayed_today(page, today):
+                props, days = entries.person_undo_prayer(page)
+                await app.notion.update_page(arg, props)
+                await query.answer("↩️ Отметка снята")
+            else:
+                page, days, already = await mark_prayed(arg)
+                await prayed_answer(query, page, days, already)
+            action = "v" if on_person else "m"
+            app.run_background(panels.refresh_dashboard())
+        elif action == "s":
+            page = await app.notion.get_page(arg)
+            await app.notion.update_page(arg, entries.person_start(page, today))
+            await query.answer(f"▶️ Молюсь за {read(page, 'Имя')}")
+            action = "v" if on_person else "m"
+            app.run_background(panels.refresh_dashboard())
+        elif action == "x":
+            page = await app.notion.get_page(arg)
+            await app.notion.update_page(arg, entries.person_pause(page))
+            await query.answer("⏸ Пауза, счётчик сохранён")
+            action = "v"
+            app.run_background(panels.refresh_dashboard())
+        else:
+            await query.answer()
+
+        if action == "v":
+            text, keyboard = ui.person_view(await app.notion.get_page(arg), today)
+            app.state.set(view_key(message_id), f"ppl:{ui.pid(arg)}")
+        elif action in ("all", "add"):
+            people = await panels.people_pages()
+            text, keyboard = ui.people_all(people) if action == "all" else ui.people_pick(people)
+            app.state.set(view_key(message_id), "ppl:list")
+        else:
+            text, keyboard = ui.people_main(await panels.people_pages(), today)
+            app.state.delete(view_key(message_id))
+        await app.syncer.edit_message(message_id, text, keyboard, pause=False)
+        if app.state.get(PEOPLE) == str(message_id):
+            main = app.state.get(view_key(message_id)) is None
+            app.state.set(f"{PEOPLE}:digest", digest(text, keyboard) if main else "")
 
     # --- кнопки: разборы ---------------------------------------------------------
 

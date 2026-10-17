@@ -45,11 +45,13 @@ def _by_order(page: dict):
 SPECS = (
     Spec("prayer", "prayers", "prayers", render.prayer, with_body=True),
     Spec("practice", "practices", "practices", render.practice),
-    Spec("person", "people", "people", render.person),
     Spec("journal", "journal", "review", render.journal),
 )
 # Раньше обиды были отдельными карточками, теперь их заменило меню 4 шага (panels.py).
-RETIRED = {"inventory": "📝 <i>Обиды теперь в меню, закреплённом вверху этой темы.</i>"}
+RETIRED = {
+    "inventory": "📝 <i>Обиды теперь в меню, закреплённом вверху этой темы.</i>",
+    "person": "👥 <i>Люди теперь в меню, закреплённом вверху этой темы.</i>",
+}
 
 
 def digest(text: str, keyboard: InlineKeyboardMarkup | None) -> str:
