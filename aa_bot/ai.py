@@ -97,6 +97,39 @@ PERSONALIZE_PROMPT = """Перед тобой текст молитвы. Под�
 Молитва:
 {template}"""
 
+GRATITUDE_PROMPT = """Человек проходит программу АА и вечером пишет благодарности: \
+пять Богу, четыре людям, три себе. Сейчас он заполняет раздел «{current}». \
+Разбей его сообщение на отдельные благодарности и разложи по разделам:
+- god: благодарность Богу, Высшей силе, жизни, за обстоятельства и события дня;
+- people: благодарность конкретному человеку или людям (назван человек, роль или группа);
+- self: благодарность себе, своим поступкам и усилиям («себе за то, что…», «я молодец, что…»).
+Если раздел неясен, клади в «{current_key}». Каждую благодарность пиши коротко, словами человека, \
+без «Спасибо» и «Благодарю» в начале, с маленькой буквы не начинай. Ничего не придумывай и не добавляй.
+
+Сообщение:
+{text}"""
+
+GRATITUDE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "god": {"type": "array", "items": {"type": "string"}},
+        "people": {"type": "array", "items": {"type": "string"}},
+        "self": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["god", "people", "self"],
+}
+
+GRATITUDE_HINT_PROMPT = """Человек проходит программу АА и вечером пишет благодарности: \
+пять Богу, четыре людям, три себе. Сейчас ему не приходит в голову, что написать в раздел «{section}». \
+Вот что было у него сегодня (записи из журнала и уже написанные благодарности):
+{context}
+
+Предложи три короткие подсказки-зацепки (до 12 слов каждая), за что он мог бы поблагодарить, \
+опираясь на его день. Не повторяй уже написанное. Тепло, без пафоса, по-русски, на «ты» не обращайся: \
+пиши как продолжение фразы «Благодарю…». Верни JSON-массив из трёх строк."""
+
+SECTION_NAMES = {"god": "Богу", "people": "людям", "self": "себе"}
+
 NAME_PLACEHOLDER = re.compile(r"\(\s*имя\s*\)", re.IGNORECASE)
 
 
@@ -201,6 +234,51 @@ class Assistant:
         if not result or has_name_placeholder(result) or not keeps_text(template, result):
             raise AIError("Gemini изменил текст молитвы")
         return result
+
+    async def sort_gratitude(self, text: str, current: str) -> dict[str, list[str]]:
+        """Раскладывает сообщение с благодарностями по разделам god / people / self."""
+        prompt = GRATITUDE_PROMPT.format(current=SECTION_NAMES[current], current_key=current, text=text)
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self._model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json", response_json_schema=GRATITUDE_SCHEMA
+                ),
+            )
+            data = json.loads(response.text or "")
+        except errors.APIError as exc:
+            raise AIError(f"Gemini не разобрал благодарности: {exc}") from exc
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise AIError(f"Gemini вернул ответ не в том формате: {exc}") from exc
+        result = {}
+        for section in SECTION_NAMES:
+            values = data.get(section) if isinstance(data, dict) else None
+            result[section] = [v.strip() for v in values or [] if isinstance(v, str) and v.strip()]
+        if not any(result.values()):
+            raise AIError("Gemini не нашёл благодарностей в сообщении")
+        return result
+
+    async def gratitude_hints(self, section: str, context: str) -> list[str]:
+        prompt = GRATITUDE_HINT_PROMPT.format(section=SECTION_NAMES[section], context=context or "записей нет")
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self._model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_json_schema={"type": "array", "items": {"type": "string"}},
+                ),
+            )
+            data = json.loads(response.text or "")
+        except errors.APIError as exc:
+            raise AIError(f"Gemini не подсказал: {exc}") from exc
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise AIError(f"Gemini вернул ответ не в том формате: {exc}") from exc
+        hints = [h.strip() for h in data if isinstance(h, str) and h.strip()] if isinstance(data, list) else []
+        if not hints:
+            raise AIError("Gemini не подсказал")
+        return hints[:3]
 
     async def analyze(self, story: str, known_people: list[str]) -> Analysis:
         known = ", ".join(known_people) if known_people else "нет"

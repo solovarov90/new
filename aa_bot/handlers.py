@@ -11,6 +11,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, ForceReply, Message, User
 
 from . import entries, render, texts, ui
+from . import gratitude as gr
 from . import notion as n
 from .agent import split_message, to_html
 from .ai import AIError, Analysis, fill_name, has_name_placeholder
@@ -138,6 +139,13 @@ def build_router(app: App, panels: Panels) -> Router:
         if is_owner(message.from_user):
             await message.reply(texts.sos(cfg.sponsor_contact))
 
+    @router.message(Command("thanks"))
+    async def cmd_thanks(message: Message) -> None:
+        if is_owner(message.from_user) and message.chat.id == cfg.chat_id:
+            await gratitude_open()
+            if topic_of(message) != "evening":
+                await message.reply("✨ Благодарности открыты в теме «🌙 Вечер». Пиши туда.")
+
     @router.message(Command("new"))
     async def cmd_new(message: Message) -> None:
         if is_owner(message.from_user) and app.agent is not None:
@@ -166,6 +174,8 @@ def build_router(app: App, panels: Panels) -> Router:
                 await continue_entry(message, card.page_id)
             elif card:
                 await talk(message, card.page_id, CARD_COLLECTIONS.get(card.kind, card.kind))
+            elif gratitude_wants(message, topic):
+                await gratitude_input(message)
             elif topic in CHAT_TOPICS:
                 await talk(message)
             elif topic == "sos":
@@ -328,22 +338,22 @@ def build_router(app: App, panels: Panels) -> Router:
 
     async def set_checkin(field_key: str, value: bool | None = True) -> bool:
         """Ставит отметку чек-ина. value=None переключает её. Возвращает новое значение."""
-        today = app.today()
         label = entries.CHECKIN_FIELDS[field_key]
         async with app.checkin_lock:
-            found = await app.notion.query(
-                db.checkin, filter={"property": "Дата", "date": {"equals": today.isoformat()}}
-            )
+            page = await today_checkin()
             if value is None:
-                value = not (found and read(found[0], label))
-            props = {label: n.checkbox(value)}
-            if found:
-                await app.notion.update_page(found[0]["id"], props)
-            else:
-                props["День"] = n.title(today.strftime("%d.%m.%Y"))
-                props["Дата"] = n.date(today.isoformat())
-                await app.notion.create_page(db.checkin, props)
+                value = not read(page, label)
+            await app.notion.update_page(page["id"], {label: n.checkbox(value)})
         return value
+
+    async def today_checkin() -> dict:
+        """Страница «Ежедневного чек-ина» на сегодня. Если её нет, создаёт. Вызывать под checkin_lock."""
+        today = app.today()
+        found = await app.notion.query(db.checkin, filter={"property": "Дата", "date": {"equals": today.isoformat()}})
+        if found:
+            return found[0]
+        props = {"День": n.title(today.strftime("%d.%m.%Y")), "Дата": n.date(today.isoformat())}
+        return await app.notion.create_page(db.checkin, props)
 
     async def show_dashboard(query: CallbackQuery) -> None:
         text, keyboard = await panels.dashboard_view()
@@ -517,6 +527,131 @@ def build_router(app: App, panels: Panels) -> Router:
             await show_walk(query, upcoming["id"] if upcoming else None, new_message=True)
         else:
             await show_walk(query, arg, new_message=False)
+
+    # --- благодарности 5·4·3 -----------------------------------------------------
+
+    def gratitude_wants(message: Message, topic: str | None) -> bool:
+        """Сообщение идёт в благодарности: сегодня они открыты и не закончены, а пишут в «Вечер»
+        или отвечают на экран благодарностей."""
+        thanks = gr.load(app.state, app.today())
+        if thanks is None or thanks.saved or thanks.complete or not thanks.active:
+            return False
+        if not (message.text or _audio(message)):
+            return False
+        reply = message.reply_to_message
+        return topic == "evening" or bool(reply and reply.message_id == thanks.message_id)
+
+    async def gratitude_show(thanks: gr.Gratitude, extra: str = "") -> None:
+        """Экран благодарностей всегда внизу темы «Вечер»: старый убираем, новый отправляем."""
+        text, keyboard = gr.screen(thanks, extra)
+        old = thanks.message_id
+        thanks.message_id = await app.syncer.send(app.topics.get("evening"), text, keyboard)
+        gr.save(app.state, thanks)
+        if old:
+            try:
+                await app.bot.delete_message(cfg.chat_id, old)
+            except TelegramBadRequest:
+                await app.syncer.edit_message(old, "✨ <i>Благодарности ниже ⬇️</i>", None, pause=False)
+
+    async def gratitude_open() -> None:
+        today = app.today()
+        thanks = gr.load(app.state, today) or gr.Gratitude(today.isoformat())
+        thanks.active = True
+        await gratitude_show(thanks)
+
+    async def gratitude_input(message: Message) -> None:
+        thanks = gr.load(app.state, app.today())
+        await app.bot.send_chat_action(cfg.chat_id, "typing", message_thread_id=message.message_thread_id)
+        text, _kind = await story_of(message)
+        added = []
+        if app.assistant is not None:
+            try:
+                added = thanks.add_sorted(await app.assistant.sort_gratitude(text, thanks.current()))
+            except AIError:
+                log.info("Благодарности разложены без Gemini")
+        if not added:
+            added = thanks.add(gr.split_items(text))
+        if not added:
+            return
+        extra = await gratitude_finish(thanks) if thanks.complete else ""
+        await gratitude_show(thanks, extra)
+
+    async def gratitude_finish(thanks: gr.Gratitude) -> str:
+        """Переносит благодарности в чек-ин дня в Notion и ставит отметку. Возвращает текст ошибки или пусто."""
+        try:
+            async with app.checkin_lock:
+                page = await today_checkin()
+                await app.notion.append_text(page["id"], gr.notion_text(thanks))
+                try:
+                    await app.notion.update_page(page["id"], entries.checkin_properties("gratitude"))
+                except NotionError:
+                    log.warning("В чек-ине нет поля «Благодарности», отметку не поставил")
+        except NotionError:
+            log.exception("Благодарности не сохранились в Notion")
+            return "⚠️ Notion не ответил. Всё записано здесь, нажми «💾 Сохранить» чуть позже."
+        thanks.saved = True
+        app.run_background(panels.refresh_dashboard())
+        return ""
+
+    async def gratitude_context(thanks: gr.Gratitude) -> str:
+        """Что было сегодня: разборы из журнала и уже написанные благодарности. Для подсказок Gemini."""
+        lines = []
+        try:
+            journal = await app.notion.query(db.journal, filter={"property": "Дата", "date": {"equals": thanks.day}})
+            lines += [f"- разбор: {read(p, 'Ситуация')}" for p in journal if read(p, "Ситуация")]
+        except NotionError:
+            log.info("Журнал для подсказок не прочитался")
+        for section in gr.SECTIONS:
+            lines += [f"- уже написано ({gr.TITLES[section]}): {item}" for item in thanks.items(section)]
+        return "\n".join(lines)
+
+    @router.callback_query(F.data.startswith("gr:"))
+    async def on_gratitude(query: CallbackQuery) -> None:
+        if not await allowed(query):
+            return
+        action = query.data.split(":", 1)[1]
+        thanks = gr.load(app.state, app.today())
+        if action == "start" or thanks is None:
+            elsewhere = thread_of(query) != app.topics.get("evening")
+            await query.answer("✨ Открыл в теме «🌙 Вечер»" if elsewhere else None)
+            await gratitude_open()
+            return
+        if action == "save":
+            await query.answer("Сохраняю…")
+            await gratitude_show(thanks, await gratitude_finish(thanks))
+            return
+        if action == "hint":
+            section = thanks.current()
+            if section is None:
+                await query.answer()
+                return
+            await query.answer("Думаю…")
+            seed = int(app.state.get("gratitude:hint") or 0) + 1
+            app.state.set("gratitude:hint", str(seed))
+            personal = None
+            if app.assistant is not None:
+                try:
+                    personal = await app.assistant.gratitude_hints(section, await gratitude_context(thanks))
+                except AIError:
+                    log.info("Подсказки без Gemini")
+            await app.bot.send_message(
+                cfg.chat_id, gr.hint_text(section, seed, personal), message_thread_id=app.topics.get("evening")
+            )
+            return
+        if action == "undo":
+            removed = thanks.undo()
+            await query.answer(f"↩️ Убрал: {removed[:150]}" if removed else "Пока нечего убирать")
+        elif action == "stop":
+            thanks.active = False
+            await query.answer("⏸ Отложил. Сообщения в «Вечер» снова идут в разбор.")
+        elif action == "go":
+            thanks.active = True
+            await query.answer()
+        else:
+            await query.answer()
+        gr.save(app.state, thanks)
+        text, keyboard = gr.screen(thanks)
+        await app.syncer.edit_message(query.message.message_id, text, keyboard, pause=False)
 
     # --- кнопки: меню промаливания ---------------------------------------------
 

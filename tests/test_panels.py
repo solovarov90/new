@@ -72,3 +72,20 @@ async def test_open_record_in_menu_is_not_reset(tmp_path):
     notion.databases["inv"] = []
     await panels.refresh_inventory()
     assert bot.edited == []
+
+
+async def test_new_day_resets_people_menu_left_open_on_a_person(tmp_path):
+    panels, app, bot, notion = make(tmp_path)
+    notion.databases["ppl"] = [
+        page("f1", Имя=("title", "Отец"), Молитва=("status", "Молюсь"), **{"Последняя молитва": ("date", "2026-10-17")})
+    ]
+    await panels.ensure()
+    await panels.refresh_all()
+    menu = int(app.state.get(PEOPLE))
+    app.state.set(view_key(menu), "ppl:f1")  # вчера в меню остался открыт человек
+
+    app.today = lambda: date(2026, 10, 18)
+    await panels.refresh_all()
+    assert app.state.get(view_key(menu)) is None
+    people_edits = [e for e in bot.edited if e["id"] == menu]
+    assert people_edits and "Сегодня: <b>0 из 1</b>" in people_edits[-1]["text"]

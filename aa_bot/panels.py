@@ -5,7 +5,7 @@ import logging
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup
 
-from . import ui
+from . import gratitude, ui
 from .app import App
 from .sync import digest
 
@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 DASHBOARD = "panel:dashboard"
 INVENTORY = "panel:inventory"
 PEOPLE = "panel:people"
+DAY = "panel:day"
 
 
 def view_key(message_id: int) -> str:
@@ -37,8 +38,15 @@ class Panels:
             dbs.checkin, filter={"property": "Дата", "date": {"equals": today.isoformat()}}
         )
         people = await app.notion.query(dbs.people)
+        thanks = gratitude.load(app.state, today)
         return ui.dashboard(
-            today, app.config.sobriety_date, checkin[0] if checkin else None, people, app.config.chat_id, app.topics
+            today,
+            app.config.sobriety_date,
+            checkin[0] if checkin else None,
+            people,
+            app.config.chat_id,
+            app.topics,
+            thanks.total if thanks else 0,
         )
 
     async def inventory_main_view(self) -> tuple[str, InlineKeyboardMarkup]:
@@ -111,7 +119,29 @@ class Panels:
         if "people" in self.app.topics and not self._browsing(PEOPLE):
             await self._refresh(PEOPLE, "people", *await self.people_main_view())
 
+    def roll_over(self) -> bool:
+        """Наступил новый день: меню промаливания и пульт возвращаются на главный экран с пустыми отметками.
+
+        Иначе, если вчера в закреплённом меню остался открыт человек или список, меню не обновлялось бы
+        и показывало вчерашние ✅. True, если день сменился.
+        """
+        today = self.app.today().isoformat()
+        last = self.app.state.get(DAY)
+        if last == today:
+            return False
+        self.app.state.set(DAY, today)
+        if last is None:
+            return False  # первый запуск: сбрасывать нечего
+        for key in (PEOPLE, DASHBOARD):
+            stored = self.app.state.get(key)
+            if stored:
+                self.app.state.delete(view_key(int(stored)))
+                self.app.state.set(f"{key}:digest", "")
+        return True
+
     async def refresh_all(self) -> None:
+        if self.roll_over():
+            log.info("Новый день: отметки промаливания сброшены")
         for refresh in (self.refresh_dashboard, self.refresh_inventory, self.refresh_people):
             try:
                 await refresh()

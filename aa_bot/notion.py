@@ -83,6 +83,14 @@ class Notion:
     async def get_database(self, database_id: str) -> dict:
         return await self._request("GET", f"/databases/{database_id}")
 
+    async def ensure_checkbox(self, database_id: str, name: str) -> bool:
+        """Добавляет в базу поле-галочку, если его ещё нет. True, если поле пришлось создать."""
+        data = await self.get_database(database_id)
+        if name in data.get("properties", {}):
+            return False
+        await self._request("PATCH", f"/databases/{database_id}", {"properties": {name: {"checkbox": {}}}})
+        return True
+
     async def archive_page(self, page_id: str) -> dict:
         """Переносит страницу в корзину Notion. Оттуда её можно восстановить в течение 30 дней."""
         return await self._request("PATCH", f"/pages/{page_id}", {"archived": True})

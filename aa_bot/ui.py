@@ -22,6 +22,7 @@ CHECKIN_LABELS = {
     "evening": "Вечерняя молитва",
     "meeting": "Встреча / звонок",
     "sober": "Трезвый день",
+    "gratitude": "Благодарности 5·4·3",
 }
 BUTTON_TEXT = 40
 
@@ -43,7 +44,8 @@ INTROS = {
     "и запишу в журнал. Под карточкой разбора: «✏️ Дописать», «✅ Разобран», «➕ В инвентаризацию».",
     "practices": "🧭 <b>Практики</b>\nЧто я делаю утром, днём и вечером. Правится в Notion или через помощника.",
     "evening": "🌙 <b>Вечер: 10 шаг</b>\nВ {evening} здесь вечерняя молитва и вопросы итога дня. "
-    "Отвечать можно голосом прямо сюда.",
+    "Отвечать можно голосом прямо сюда.\n✨ Кнопка «Благодарности» или /thanks: пять Богу, четыре людям, "
+    "три себе. Подскажу, если не идёт, и сохраню в Notion.",
     "sos": "🆘 <b>SOS</b>\nКогда тяжело, напиши сюда что угодно или /sos в любой теме.",
 }
 
@@ -165,6 +167,7 @@ def dashboard(
     people: list[dict],
     chat_id: int,
     topics: dict[str, int],
+    gratitude_total: int = 0,
 ) -> tuple[str, InlineKeyboardMarkup]:
     done = checkin_state(checkin_page)
     lines = [f"🕊 <b>Сегодня {today.strftime('%d.%m')}, {WEEKDAYS[today.weekday()]}</b>"]
@@ -174,10 +177,17 @@ def dashboard(
     marked, total = people_today(people, today.isoformat())
     if total:
         lines.append(f"Промаливание: {marked} из {total}")
-    toggles = [_cb(f"{'✅' if done[key] else '⬜'} {CHECKIN_LABELS[key]}", f"tg:{key}") for key in CHECKIN_FIELDS]
+    # Благодарности не переключаются галочкой: кнопка открывает сами благодарности.
+    toggles = [
+        _cb(f"{'✅' if done[key] else '⬜'} {CHECKIN_LABELS[key]}", f"tg:{key}")
+        for key in CHECKIN_FIELDS
+        if key != "gratitude"
+    ]
     rows = [toggles[i : i + 2] for i in range(0, len(toggles), 2)]
     if total:
         rows.append([_cb(f"🙏 Промаливание по очереди · {marked}/{total}", "pw:first")])
+    thanks = "✅" if done["gratitude"] else f"{gratitude_total}/12"
+    rows.append([_cb(f"✨ Благодарности 5·4·3 · {thanks}", "gr:start")])
     rows.append([_cb("📖 Молитвы", "prl"), _cb("🆘 SOS", "sos"), _cb("🔄 Обновить", "dash")])
     rows += topic_buttons(chat_id, topics)
     return "\n".join(lines), _kb(rows)
@@ -209,6 +219,7 @@ def morning(
 
 def evening(prayers: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
     rows = prayer_buttons(prayers)
+    rows.append([_cb("✨ Благодарности: 5 Богу · 4 людям · 3 себе", "gr:start")])
     rows.append([_cb("✅ Итог дня сделан", "chk:review"), _cb("🙏 Вечерняя молитва", "chk:evening")])
     rows.append([_cb("🍃 Трезвый день", "chk:sober"), _cb("🤝 Встреча или звонок", "chk:meeting")])
     return texts.EVENING_QUESTIONS, _kb(rows)

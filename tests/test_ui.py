@@ -81,7 +81,7 @@ def test_dashboard_shows_checkin_state_and_topic_links():
     text, keyboard = ui.dashboard(
         date(2026, 10, 17), date(2026, 6, 15), checkin, [father, mother], -1003990082908, {"chat": 72, "sos": 9}
     )
-    assert "Трезвость: <b>124 дня</b>" in text and "Практики дня: 1 из 6" in text
+    assert "Трезвость: <b>124 дня</b>" in text and "Практики дня: 1 из 7" in text
     assert "Промаливание: 1 из 2" in text
     labels = [b.text for b in buttons(keyboard)]
     assert "✅ Утренняя молитва" in labels and "⬜ Трезвый день" in labels

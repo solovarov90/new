@@ -10,12 +10,13 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import BotCommand, BotCommandScopeChat
 from google import genai
 
+from . import entries
 from .agent import Agent
 from .ai import Assistant
 from .app import App
 from .config import load_config
 from .handlers import build_router
-from .notion import Notion
+from .notion import Notion, NotionError
 from .panels import Panels
 from .schedule import Scheduler
 from .state import State
@@ -54,6 +55,12 @@ async def main() -> None:
     else:
         log.warning("GEMINI_API_KEY не задан: нет разговора, голосовые не расшифровываются")
 
+    try:
+        if await notion.ensure_checkbox(cfg.databases.checkin, entries.CHECKIN_FIELDS["gratitude"]):
+            log.info("В «Ежедневный чек-ин» добавлено поле «Благодарности»")
+    except NotionError:
+        log.warning("Не удалось добавить поле «Благодарности» в чек-ин, добавьте галочку вручную")
+
     syncer = Syncer(bot, cfg.chat_id, notion, cfg.databases, state, topics)
     app = App(cfg, bot, notion, state, syncer, assistant, topics, agent)
     panels = Panels(app)
@@ -82,6 +89,7 @@ async def main() -> None:
 
 COMMANDS = [
     BotCommand(command="menu", description="Пульт на сегодня"),
+    BotCommand(command="thanks", description="Благодарности: 5 Богу, 4 людям, 3 себе"),
     BotCommand(command="sos", description="Когда тяжело"),
     BotCommand(command="new", description="Начать разговор с помощником заново"),
     BotCommand(command="sync", description="Обновить всё из Notion"),
