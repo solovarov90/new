@@ -49,11 +49,11 @@ class Scheduler:
     async def morning(self, day: date) -> None:
         app = self.app
         prayers = await self._prayers("Утро")
-        people = await app.notion.query(app.config.databases.people)
-        text, keyboard = ui.morning(day, app.config.sobriety_date, prayers, people)
+        text, keyboard = ui.morning(day, app.config.sobriety_date, prayers)
         await app.syncer.send(app.topics.get("morning"), text, keyboard)
 
     async def evening(self, day: date) -> None:
         app = self.app
-        text, keyboard = ui.evening(await self._prayers("Вечер"))
+        people = await app.notion.query(app.config.databases.people)
+        text, keyboard = ui.evening(await self._prayers("Вечер"), people, day)
         await app.syncer.send(app.topics.get("evening"), text, keyboard)

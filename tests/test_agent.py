@@ -181,3 +181,25 @@ def test_to_html_converts_simple_markdown_and_escapes():
 def test_split_message_keeps_parts_under_limit():
     parts = split_message("абзац\n" * 3000, limit=4000)
     assert len(parts) > 1 and all(len(p) <= 4000 for p in parts)
+
+
+async def test_agent_runs_telegram_actions_and_reports_their_errors(notion, tmp_path):
+    models = FakeModels([_call("start_people_prayer", {}), _call("open_gratitude", {}), _text("Молитва уже в теме.")])
+    client = SimpleNamespace(aio=SimpleNamespace(models=models))
+    agent = Agent(client, "m", Workspace(notion, make_config()), State(str(tmp_path / "s.db")), make_config())
+    started = []
+
+    async def start(args):
+        started.append(args)
+        return {"started": True}
+
+    async def broken(_args):
+        raise RuntimeError("нет темы")
+
+    agent.actions.update({"start_people_prayer": start, "open_gratitude": broken})
+    reply = await agent.reply(
+        "[Тема «👥 Промаливание»]\nдавай", datetime(2026, 10, 17, 21, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    )
+    assert started == [{}] and reply.text == "Молитва уже в теме."
+    error = models.requests[2][-1].parts[0].function_response.response["result"]
+    assert error == {"error": "нет темы"}

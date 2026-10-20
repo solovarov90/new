@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
@@ -42,6 +43,8 @@ SYSTEM_PROMPT = f"""Ты личный помощник человека, кот�
 и запиши, если он согласится.
 - Замечай повторяющиеся страхи и дефекты в инвентаризации, если он просит или это помогает разговору. \
 Это материал для 6–7 шагов и для разговора со спонсором.
+- Сообщения приходят из разных тем группы, в начале стоит пометка темы. Понимай просьбу по теме: короткое «давай» в «Промаливании» — это «начнём молиться», а не имя человека. Если не ясно, что он хочет, переспроси одним вопросом, а не делай наугад.
+- Промаливание запускай инструментом start_people_prayer, благодарности — open_gratitude. После запуска ответь одной короткой фразой: молитва уже в теме.
 - Молитвы из базы присылай целиком и точно, ничего не меняя.
 - Вечером он пишет благодарности: пять Богу, четыре людям, три себе. Они ведутся в теме «🌙 Вечер» \
 по кнопке «✨ Благодарности» или командой /thanks и сами попадают в чек-ин дня. \
@@ -124,6 +127,19 @@ TOOLS = [
                 parameters_json_schema=_schema({"person_id": {"type": "string"}}, ["person_id"]),
             ),
             types.FunctionDeclaration(
+                name="start_people_prayer",
+                description=(
+                    "Запустить промаливание: в теме «Промаливание» появится молитва с именем первого, за кого сегодня "
+                    "ещё не молился, и кнопка «Помолился · дальше». person_id — начать с конкретного человека."
+                ),
+                parameters_json_schema=_schema({"person_id": {"type": "string"}}, []),
+            ),
+            types.FunctionDeclaration(
+                name="open_gratitude",
+                description="Открыть экран вечерних благодарностей 5·4·3 (Богу, людям, себе) в теме «Вечер».",
+                parameters_json_schema=_schema({}, []),
+            ),
+            types.FunctionDeclaration(
                 name="checkin",
                 description="Отметить пункты сегодняшнего чек-ина.",
                 parameters_json_schema=_schema(
@@ -149,6 +165,8 @@ class Agent:
         self._workspace = workspace
         self._state = state
         self._config = config
+        # Действия в Telegram (запустить промаливание, открыть благодарности). Их задают обработчики.
+        self.actions: dict[str, Callable[[dict], Awaitable[dict]]] = {}
 
     def history(self) -> list[dict]:
         raw = self._state.get(HISTORY_KEY)
@@ -190,7 +208,11 @@ class Agent:
             contents.append(response.candidates[0].content)
             parts = []
             for call in calls:
-                result, did_change = await run_tool(self._workspace, call.name, dict(call.args or {}), now.date())
+                args = dict(call.args or {})
+                if call.name in self.actions:
+                    result, did_change = await self._action(call.name, args), False
+                else:
+                    result, did_change = await run_tool(self._workspace, call.name, args, now.date())
                 changed = changed or (did_change and "error" not in result)
                 log.info("Инструмент %s: %s", call.name, "ошибка" if "error" in result else "ok")
                 parts.append(
@@ -207,6 +229,13 @@ class Agent:
             answer = "Не получилось ответить. Попробуй сказать иначе."
         self._remember(message, answer)
         return Reply(answer, changed)
+
+    async def _action(self, name: str, args: dict) -> dict:
+        try:
+            return await self.actions[name](args)
+        except Exception as exc:  # модель должна прочитать причину, а не уронить разговор
+            log.exception("Действие %s", name)
+            return {"error": str(exc) or type(exc).__name__}
 
 
 def to_html(text: str) -> str:

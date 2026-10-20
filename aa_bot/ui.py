@@ -200,29 +200,28 @@ def prayer_buttons(prayers: list[dict]) -> list[list[InlineKeyboardButton]]:
     return [[_cb(f"📖 {_short(read(p, 'Название') or 'Молитва')}", f"pr:{pid(p['id'])}")] for p in prayers]
 
 
-def morning(
-    today: date, sobriety: date | None, prayers: list[dict], people: list[dict]
-) -> tuple[str, InlineKeyboardMarkup]:
+def morning(today: date, sobriety: date | None, prayers: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
     lines = [f"☀️ <b>Доброе утро!</b> {today.strftime('%d.%m.%Y')}"]
     if sobriety:
         lines.append(f"Трезвость: <b>{plural_days((today - sobriety).days)}</b>")
     lines.append("\nУтренние молитвы открываются по кнопкам ниже.")
-    _marked, total = people_today(people, today.isoformat())
-    if total:
-        lines.append(f"Промаливание: {total} человек, по очереди с молитвой для каждого.")
     rows = prayer_buttons(prayers)
-    if total:
-        rows.append([_cb("🙏 Промаливание по очереди", "pw:first")])
     rows.append([_cb("✅ Помолился утром", "chk:morning")])
     return "\n".join(lines), _kb(rows)
 
 
-def evening(prayers: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
+def evening(prayers: list[dict], people: list[dict], today: date) -> tuple[str, InlineKeyboardMarkup]:
+    """Вечер: молитвы, промаливание за людей, благодарности и отметки 10 шага."""
+    text = texts.EVENING_QUESTIONS
     rows = prayer_buttons(prayers)
+    marked, total = people_today(people, today.isoformat())
+    if total:
+        text += f"\n\n👥 Промаливание: {marked} из {total}, по очереди с молитвой для каждого."
+        rows.append([_cb(f"🙏 Промаливание по очереди · {marked}/{total}", "pw:first")])
     rows.append([_cb("✨ Благодарности: 5 Богу · 4 людям · 3 себе", "gr:start")])
     rows.append([_cb("✅ Итог дня сделан", "chk:review"), _cb("🙏 Вечерняя молитва", "chk:evening")])
     rows.append([_cb("🍃 Трезвый день", "chk:sober"), _cb("🤝 Встреча или звонок", "chk:meeting")])
-    return texts.EVENING_QUESTIONS, _kb(rows)
+    return text, _kb(rows)
 
 
 def prayer_list(prayers: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
@@ -337,9 +336,22 @@ def person_view(page: dict, today: str) -> tuple[str, InlineKeyboardMarkup]:
     rows = [
         [_cb("↩️ Снять отметку" if prayed else "✅ Помолился сегодня", f"pp:t:{page_id}")],
         [_cb("📖 Молитва с именем", f"pp:pr:{page_id}"), switch],
+        [_cb("🗑 Удалить из списка", f"pp:del:{page_id}")],
         [_cb("⬅️ Все люди", "pp:all"), _cb("🏠 Сегодня", "pp:m")],
     ]
     return "\n".join(lines), _kb(rows)
+
+
+def person_delete_confirm(page: dict) -> tuple[str, InlineKeyboardMarkup]:
+    name = escape(read(page, "Имя") or "Без имени")
+    text = (
+        f"🗑 <b>Удалить «{name}» из списка?</b>\n"
+        "Счётчик дней пропадёт. Запись уйдёт в корзину Notion, оттуда её можно вернуть 30 дней.\n"
+        "Если нужно просто не молиться какое-то время, лучше «⏸ Пауза»."
+    )
+    page_id = pid(page["id"])
+    rows = [[_cb("🗑 Да, удалить", f"pp:rm:{page_id}"), _cb("⬅️ Отмена", f"pp:v:{page_id}")]]
+    return text, _kb(rows)
 
 
 def personal_prayer(names: list[tuple[str, str]], text: str) -> tuple[str, InlineKeyboardMarkup]:

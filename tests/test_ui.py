@@ -92,7 +92,19 @@ def test_dashboard_shows_checkin_state_and_topic_links():
 
 def test_morning_is_one_message_with_prayer_buttons():
     prayer = page("p1", Название=("title", "Молитва о начале дня"))
-    text, keyboard = ui.morning(date(2026, 10, 17), date(2026, 6, 15), [prayer], [])
+    text, keyboard = ui.morning(date(2026, 10, 17), date(2026, 6, 15), [prayer])
     data = [b.callback_data for b in buttons(keyboard)]
     assert "Трезвость" in text
     assert data == ["pr:p1", "chk:morning"]
+
+
+def test_people_prayer_is_in_the_evening_not_the_morning():
+    father = page(
+        "f1", Имя=("title", "Отец"), Молитва=("status", "Молюсь"), **{"Последняя молитва": ("date", "2026-10-17")}
+    )
+    mother = page("m1", Имя=("title", "Мать"), Молитва=("status", "Молюсь"))
+    text, keyboard = ui.evening([], [father, mother], date(2026, 10, 17))
+    assert "Промаливание: 1 из 2" in text
+    assert "pw:first" in [b.callback_data for b in buttons(keyboard)]
+    _text, keyboard = ui.morning(date(2026, 10, 17), None, [])
+    assert "pw:first" not in [b.callback_data for b in buttons(keyboard)]

@@ -132,3 +132,10 @@ async def test_personalize_accepts_declined_name_and_rejects_rewrites():
     rewritten = Assistant("k", "m", SimpleNamespace(aio=SimpleNamespace(models=FakeModels("Совсем другой текст"))))
     with pytest.raises(AIError):
         await rewritten.personalize(template, "Отец")
+
+
+def test_person_can_be_deleted_after_confirmation():
+    _t, kb = ui.person_view(PEOPLE[1], TODAY)
+    assert "pp:del:m1" in [b.callback_data for b in buttons(kb)]
+    text, kb = ui.person_delete_confirm(PEOPLE[1])
+    assert "Мать" in text and [b.callback_data for b in buttons(kb)] == ["pp:rm:m1", "pp:v:m1"]

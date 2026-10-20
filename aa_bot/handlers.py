@@ -24,6 +24,30 @@ from .topics import ensure_topics
 log = logging.getLogger(__name__)
 
 STORY_TOPICS = ("review", "inventory", "evening", "morning")
+# Короче этого и в одну строку — реплика для помощника, а не рассказ для разбора.
+STORY_MIN_CHARS = 150
+# Что помощник должен знать о теме, из которой пришло сообщение.
+TOPIC_CONTEXT = {
+    "chat": "[Тема «💬 Помощник»: обычный разговор.]",
+    "people": (
+        "[Тема «👥 Промаливание»: список людей, за которых он молится каждый день. Здесь «давай», «начнём», "
+        "«погнали» значит запустить промаливание (start_people_prayer). Имя или «добавь …» — добавить человека "
+        "в базу people со статусом «Не начато». Не добавляй человека, если это не похоже на имя или роль.]"
+    ),
+    "prayers": (
+        "[Тема «🙏 Молитвы»: его молитвы. Текст молитвы — добавить в базу prayers (первая строка — название). "
+        "Просьба показать молитву — найди и пришли целиком.]"
+    ),
+    "evening": (
+        "[Тема «🌙 Вечер: 10 шаг»: вечерняя молитва, вопросы итога дня, промаливание и благодарности 5·4·3 "
+        "(open_gratitude). «Давай промаливание» — start_people_prayer.]"
+    ),
+    "morning": "[Тема «☀️ Утро»: утренние молитвы и намерение на день.]",
+    "review": "[Тема «🎙 Разбор ситуаций»: разборы по схеме 4 шага, журнал.]",
+    "inventory": "[Тема «📝 4 шаг»: инвентаризация обид.]",
+    "practices": "[Тема «🧭 Практики»: что он делает утром, днём и вечером.]",
+    "sos": "[Тема «🆘 SOS»: ему сейчас тяжело. Сначала поддержи, коротко и тепло.]",
+}
 # None — общая тема группы (General): там тоже можно просто разговаривать.
 CHAT_TOPICS = ("chat", None)
 CARD_COLLECTIONS = {
@@ -180,6 +204,18 @@ def build_router(app: App, panels: Panels) -> Router:
                 await talk(message)
             elif topic == "sos":
                 await message.reply(texts.sos(cfg.sponsor_contact))
+                if app.agent is not None and (message.text or _audio(message)):
+                    await talk(message, topic=topic)
+            elif topic in STORY_TOPICS and _is_story(message):
+                # Голосовое или длинный рассказ — это разбор ситуации, его ведёт схема 4 шага.
+                await new_entry(message)
+            elif topic == "prayers" and message.text and "\n" in message.text.strip():
+                # Текст молитвы сохраняем дословно, не через пересказ помощника.
+                await add_prayer(message)
+            elif app.agent is not None and (message.text or _audio(message)):
+                # Короткие сообщения в любой теме понимает помощник: он знает, где ты пишешь,
+                # и сам решает, добавить ли человека, запустить промаливание или просто ответить.
+                await talk(message, topic=topic)
             elif topic == "prayers" and message.text:
                 await add_prayer(message)
             elif topic == "people" and message.text:
@@ -218,15 +254,19 @@ def build_router(app: App, panels: Panels) -> Router:
         )
         app.state.set(prompt_key(sent.message_id), json.dumps(prompt))
 
-    async def talk(message: Message, page_id: str | None = None, collection: str | None = None) -> None:
+    async def talk(
+        message: Message, page_id: str | None = None, collection: str | None = None, topic: str | None = None
+    ) -> None:
         if app.agent is None:
             raise UserFacingError("Чтобы разговаривать, добавьте GEMINI_API_KEY в настройки бота.")
         if not (message.text or _audio(message)):
             return
         await app.bot.send_chat_action(cfg.chat_id, "typing", message_thread_id=message.message_thread_id)
         text, _kind = await story_of(message)
-        context = f"[Ответ на запись из базы {collection}, id записи {page_id}]" if page_id else None
-        await run_agent(text, message.message_thread_id, message.message_id, context)
+        context = [TOPIC_CONTEXT.get(topic or topic_of(message) or "chat", TOPIC_CONTEXT["chat"])]
+        if page_id:
+            context.append(f"[Ответ на запись из базы {collection}, id записи {page_id}]")
+        await run_agent(text, message.message_thread_id, message.message_id, "\n".join(context))
 
     async def run_agent(text: str, thread: int | None, reply_to: int | None, context: str | None = None) -> None:
         async with app.agent_lock:
@@ -319,9 +359,7 @@ def build_router(app: App, panels: Panels) -> Router:
         names = [line.strip() for line in message.text.split("\n") if line.strip()]
         for name in names:
             await app.notion.create_page(db.people, entries.person_from_name(name))
-        await message.reply(
-            f"✍️ Добавил: {escape(', '.join(names))}. Они в меню «👥 Промаливание» → «➕ Начать молиться за…»."
-        )
+        await message.reply(f"✍️ Добавил: {escape(', '.join(names))}. Они уже в ежедневном списке «👥 Промаливание».")
         await panels.refresh_people()
 
     async def refresh_card(page: dict, kind: str) -> None:
@@ -483,6 +521,13 @@ def build_router(app: App, panels: Panels) -> Router:
 
     async def show_walk(query: CallbackQuery, target: str | None, new_message: bool) -> None:
         """Молитва с именем для target (или итог, если target None) в том же сообщении или в новом."""
+        text, keyboard = await walk_view(target)
+        if new_message:
+            await app.bot.send_message(cfg.chat_id, text, message_thread_id=thread_of(query), reply_markup=keyboard)
+        else:
+            await app.syncer.edit_message(query.message.message_id, text, keyboard, pause=False)
+
+    async def walk_view(target: str | None):
         today = app.today().isoformat()
         people = await panels.people_pages()
         daily = ui.daily_list(people)
@@ -496,10 +541,27 @@ def build_router(app: App, panels: Panels) -> Router:
             upcoming = ui.next_unprayed(daily, today, after=ui.pid(page["id"]))
             if upcoming is not None:
                 app.run_background(named_prayer([read(upcoming, "Имя") or ""]))
-        if new_message:
-            await app.bot.send_message(cfg.chat_id, text, message_thread_id=thread_of(query), reply_markup=keyboard)
-        else:
-            await app.syncer.edit_message(query.message.message_id, text, keyboard, pause=False)
+        return text, keyboard
+
+    # --- действия помощника в Telegram -------------------------------------------
+
+    async def agent_start_prayer(args: dict) -> dict:
+        target = args.get("person_id")
+        if not target:
+            upcoming = ui.next_unprayed(ui.daily_list(await panels.people_pages()), app.today().isoformat())
+            if upcoming is None:
+                return {"done": "Сегодня уже помолился за всех из списка"}
+            target = upcoming["id"]
+        text, keyboard = await walk_view(target)
+        await app.bot.send_message(cfg.chat_id, text, message_thread_id=app.topics.get("people"), reply_markup=keyboard)
+        return {"started": True, "topic": "👥 Промаливание"}
+
+    async def agent_open_gratitude(_args: dict) -> dict:
+        await gratitude_open()
+        return {"opened": True, "topic": "🌙 Вечер"}
+
+    if app.agent is not None:
+        app.agent.actions.update({"start_people_prayer": agent_start_prayer, "open_gratitude": agent_open_gratitude})
 
     @router.callback_query(F.data.startswith("pw"))
     async def on_prayer_walk(query: CallbackQuery) -> None:
@@ -705,6 +767,20 @@ def build_router(app: App, panels: Panels) -> Router:
             await query.answer(f"▶️ {read(page, 'Имя')} снова в ежедневном списке")
             action = "v" if on_person else "m"
             app.run_background(panels.refresh_dashboard())
+        elif action == "del":
+            await query.answer()
+            text, keyboard = ui.person_delete_confirm(await app.notion.get_page(arg))
+            app.state.set(view_key(message_id), f"ppl:{ui.pid(arg)}")
+            await app.syncer.edit_message(message_id, text, keyboard, pause=False)
+            if app.state.get(PEOPLE) == str(message_id):
+                app.state.set(f"{PEOPLE}:digest", "")
+            return
+        elif action == "rm":
+            page = await app.notion.get_page(arg)
+            await app.notion.archive_page(arg)
+            await query.answer(f"🗑 {read(page, 'Имя')} удалён из списка")
+            action = "all"
+            app.run_background(panels.refresh_dashboard())
         elif action == "x":
             page = await app.notion.get_page(arg)
             await app.notion.update_page(arg, entries.person_pause(page))
@@ -851,6 +927,14 @@ def build_router(app: App, panels: Panels) -> Router:
             app.state.set(f"{INVENTORY}:digest", digest(text, keyboard) if main else "")
 
     return router
+
+
+def _is_story(message: Message) -> bool:
+    """Голосовое или длинный текст: рассказ о ситуации для разбора, а не реплика."""
+    if _audio(message):
+        return True
+    text = (message.text or "").strip()
+    return len(text) >= STORY_MIN_CHARS or "\n" in text
 
 
 def _audio(message: Message):
