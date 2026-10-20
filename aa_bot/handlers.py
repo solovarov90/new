@@ -30,9 +30,11 @@ STORY_MIN_CHARS = 150
 TOPIC_CONTEXT = {
     "chat": "[Тема «💬 Помощник»: обычный разговор.]",
     "people": (
-        "[Тема «👥 Промаливание»: список людей, за которых он молится каждый день. Здесь «давай», «начнём», "
-        "«погнали» значит запустить промаливание (start_people_prayer). Имя или «добавь …» — добавить человека "
-        "в базу people со статусом «Не начато». Не добавляй человека, если это не похоже на имя или роль.]"
+        "[Тема «👥 Промаливание»: список людей, за которых он молится каждый день. Если в сообщении только "
+        "«давай», «начнём», «погнали» — запусти промаливание (start_people_prayer). Если слово совпадает с именем "
+        "из списка ниже, речь о человеке: «удали X» — убрать его (archive_record), «помолился за X» — mark_prayed. "
+        "Новое имя или «добавь …» — добавить в базу people со статусом «Не начато». Не добавляй человека, "
+        "если это не похоже на имя или роль.]"
     ),
     "prayers": (
         "[Тема «🙏 Молитвы»: его молитвы. Текст молитвы — добавить в базу prayers (первая строка — название). "
@@ -263,10 +265,25 @@ def build_router(app: App, panels: Panels) -> Router:
             return
         await app.bot.send_chat_action(cfg.chat_id, "typing", message_thread_id=message.message_thread_id)
         text, _kind = await story_of(message)
-        context = [TOPIC_CONTEXT.get(topic or topic_of(message) or "chat", TOPIC_CONTEXT["chat"])]
+        topic = topic or topic_of(message) or "chat"
+        context = [TOPIC_CONTEXT.get(topic, TOPIC_CONTEXT["chat"])]
+        if topic in ("people", "evening"):
+            context.append(await people_context())
         if page_id:
             context.append(f"[Ответ на запись из базы {collection}, id записи {page_id}]")
         await run_agent(text, message.message_thread_id, message.message_id, "\n".join(context))
+
+    async def people_context() -> str:
+        """Кто в списке промаливания, с id: помощник сразу узнаёт имена и не путает их с командами."""
+        try:
+            people = await panels.people_pages()
+        except NotionError:
+            return "[Список людей сейчас не прочитался.]"
+        listed = "; ".join(
+            f"{read(p, 'Имя') or 'Без имени'} (id {p['id']}, {read(p, 'Молитва') or 'Не начато'})"
+            for p in sorted(people, key=lambda p: p["created_time"])
+        )
+        return f"[Люди в списке: {listed or 'никого'}]"
 
     async def run_agent(text: str, thread: int | None, reply_to: int | None, context: str | None = None) -> None:
         async with app.agent_lock:
