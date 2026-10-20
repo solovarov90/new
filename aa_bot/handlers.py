@@ -8,7 +8,8 @@ from html import escape
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, ForceReply, Message, User
+from aiogram.types import CallbackQuery, ForceReply, Message, ReactionTypeEmoji, User
+from aiogram.utils.chat_action import ChatActionSender
 
 from . import entries, render, texts, ui
 from . import gratitude as gr
@@ -186,49 +187,65 @@ def build_router(app: App, panels: Panels) -> Router:
             return
         topic = topic_of(message)
         reply = message.reply_to_message
+        # 👀 — прочитал. Пока думаю, в теме горит «печатает…», после ответа ставлю 🙏.
+        await react(message, "👀")
         try:
-            prompt = app.state.get(prompt_key(reply.message_id)) if reply else None
-            view = app.state.get(view_key(reply.message_id)) if reply else None
-            card = app.state.card_by_message(reply.message_id) if reply else None
-            if prompt:
-                await answer_prompt(message, json.loads(prompt), reply.message_id)
-            elif view and view.startswith("ppl:") and view != "ppl:list":
-                await talk(message, view[4:], "people")
-            elif view and not view.startswith(("person:", "ppl:")):
-                await talk(message, view, "inventory")
-            elif card and card.kind == "journal":
-                await continue_entry(message, card.page_id)
-            elif card:
-                await talk(message, card.page_id, CARD_COLLECTIONS.get(card.kind, card.kind))
-            elif gratitude_wants(message, topic):
-                await gratitude_input(message)
-            elif topic in CHAT_TOPICS:
-                await talk(message)
-            elif topic == "sos":
-                await message.reply(texts.sos(cfg.sponsor_contact))
-                if app.agent is not None and (message.text or _audio(message)):
-                    await talk(message, topic=topic)
-            elif topic in STORY_TOPICS and _is_story(message):
-                # Голосовое или длинный рассказ — это разбор ситуации, его ведёт схема 4 шага.
-                await new_entry(message)
-            elif topic == "prayers" and message.text and "\n" in message.text.strip():
-                # Текст молитвы сохраняем дословно, не через пересказ помощника.
-                await add_prayer(message)
-            elif app.agent is not None and (message.text or _audio(message)):
-                # Короткие сообщения в любой теме понимает помощник: он знает, где ты пишешь,
-                # и сам решает, добавить ли человека, запустить промаливание или просто ответить.
-                await talk(message, topic=topic)
-            elif topic == "prayers" and message.text:
-                await add_prayer(message)
-            elif topic == "people" and message.text:
-                await add_people(message)
-            elif topic in STORY_TOPICS and (message.text or _audio(message)):
-                await new_entry(message)
+            async with ChatActionSender.typing(
+                chat_id=cfg.chat_id, bot=app.bot, message_thread_id=message.message_thread_id, interval=4
+            ):
+                await route(message, topic, reply)
+            await react(message, "🙏")
         except UserFacingError as exc:
             await message.reply(f"⚠️ {escape(str(exc))}")
         except NotionError:
             log.exception("Ошибка Notion")
             await message.reply("⚠️ Notion сейчас не ответил. Сообщение здесь сохранилось, попробуйте ещё раз позже.")
+
+    async def route(message: Message, topic: str | None, reply: Message | None) -> None:
+        prompt = app.state.get(prompt_key(reply.message_id)) if reply else None
+        view = app.state.get(view_key(reply.message_id)) if reply else None
+        card = app.state.card_by_message(reply.message_id) if reply else None
+        if prompt:
+            await answer_prompt(message, json.loads(prompt), reply.message_id)
+        elif view and view.startswith("ppl:") and view != "ppl:list":
+            await talk(message, view[4:], "people")
+        elif view and not view.startswith(("person:", "ppl:")):
+            await talk(message, view, "inventory")
+        elif card and card.kind == "journal":
+            await continue_entry(message, card.page_id)
+        elif card:
+            await talk(message, card.page_id, CARD_COLLECTIONS.get(card.kind, card.kind))
+        elif gratitude_wants(message, topic):
+            await gratitude_input(message)
+        elif topic in CHAT_TOPICS:
+            await talk(message)
+        elif topic == "sos":
+            await message.reply(texts.sos(cfg.sponsor_contact))
+            if app.agent is not None and (message.text or _audio(message)):
+                await talk(message, topic=topic)
+        elif topic in STORY_TOPICS and _is_story(message):
+            # Голосовое или длинный рассказ — это разбор ситуации, его ведёт схема 4 шага.
+            await new_entry(message)
+        elif topic == "prayers" and message.text and "\n" in message.text.strip():
+            # Текст молитвы сохраняем дословно, не через пересказ помощника.
+            await add_prayer(message)
+        elif app.agent is not None and (message.text or _audio(message)):
+            # Короткие сообщения в любой теме понимает помощник: он знает, где ты пишешь,
+            # и сам решает, добавить ли человека, запустить промаливание или просто ответить.
+            await talk(message, topic=topic)
+        elif topic == "prayers" and message.text:
+            await add_prayer(message)
+        elif topic == "people" and message.text:
+            await add_people(message)
+        elif topic in STORY_TOPICS and (message.text or _audio(message)):
+            await new_entry(message)
+
+    async def react(message: Message, emoji: str) -> None:
+        """Реакция на сообщение. Если в группе реакции выключены или сообщение уже убрано, молча пропускаем."""
+        try:
+            await app.bot.set_message_reaction(cfg.chat_id, message.message_id, [ReactionTypeEmoji(emoji=emoji)])
+        except TelegramBadRequest:
+            pass
 
     async def answer_prompt(message: Message, prompt: dict, prompt_message_id: int) -> None:
         mode, page_id = prompt.get("mode"), prompt.get("page")
