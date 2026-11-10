@@ -11,7 +11,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, ForceReply, Message, ReactionTypeEmoji, User
 from aiogram.utils.chat_action import ChatActionSender
 
-from . import entries, render, texts, ui
+from . import entries, pause, render, texts, ui
 from . import gratitude as gr
 from . import notion as n
 from .agent import split_message, to_html
@@ -178,6 +178,31 @@ def build_router(app: App, panels: Panels) -> Router:
         if is_owner(message.from_user) and app.agent is not None:
             app.agent.reset()
             await message.reply("🧹 Начинаю разговор заново. Записи в Notion остались как были.")
+
+    @router.message(Command("stop", "pause"))
+    async def cmd_stop(message: Message) -> None:
+        if not is_owner(message.from_user):
+            return
+        if not pause.stop(app.state, app.now()):
+            await message.reply(f"⏸ Уже на паузе {pause.since_text(app.state)}. Включить: /resume")
+            return
+        await message.reply(
+            "⏸ Пауза. Утреннее и вечернее сообщения больше не приходят, счёт дней трезвости убран с пульта. "
+            "Кнопки, помощник и записи в Notion работают как обычно.\nВключить обратно: /resume"
+        )
+        app.run_background(panels.refresh_dashboard())
+
+    @router.message(Command("resume"))
+    async def cmd_resume(message: Message) -> None:
+        if not is_owner(message.from_user):
+            return
+        if not pause.resume(app.state):
+            await message.reply("▶️ Паузы нет, всё и так работает. Остановить: /stop")
+            return
+        await message.reply(
+            f"▶️ Включил. Утро придёт в {cfg.morning_time}, вечер в {cfg.evening_time}, счёт дней снова на пульте."
+        )
+        app.run_background(panels.refresh_dashboard())
 
     # --- сообщения в темах -----------------------------------------------------
 

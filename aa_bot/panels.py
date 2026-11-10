@@ -5,7 +5,7 @@ import logging
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup
 
-from . import gratitude, ui
+from . import gratitude, pause, ui
 from .app import App
 from .sync import digest
 
@@ -41,12 +41,13 @@ class Panels:
         thanks = gratitude.load(app.state, today)
         return ui.dashboard(
             today,
-            app.config.sobriety_date,
+            pause.sober_days(app.config.sobriety_date, app.state, today),
             checkin[0] if checkin else None,
             people,
             app.config.chat_id,
             app.topics,
             thanks.total if thanks else 0,
+            paused=pause.since(app.state) is not None,
         )
 
     async def inventory_main_view(self) -> tuple[str, InlineKeyboardMarkup]:

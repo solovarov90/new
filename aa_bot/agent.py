@@ -11,6 +11,7 @@ from html import escape
 from google import genai
 from google.genai import errors, types
 
+from . import pause
 from .ai import AIError
 from .config import Config
 from .entries import CHECKIN_FIELDS, plural_days
@@ -49,6 +50,9 @@ SYSTEM_PROMPT = f"""Ты личный помощник человека, кот�
 который приходит вместе с сообщением, и рядом стоит «удали», «помолился за», «пауза», — речь о человеке. Если не ясно, что он хочет, переспроси одним вопросом, а не делай наугад.
 - Промаливание запускай инструментом start_people_prayer, благодарности — open_gratitude. После запуска ответь одной короткой фразой: молитва уже в теме.
 - Молитвы из базы присылай целиком и точно, ничего не меняя.
+- Команда /stop ставит на паузу утреннее и вечернее сообщения и счёт дней трезвости, /resume включает обратно. \
+Сам ты паузу не ставишь и не снимаешь: если он об этом просит, подскажи нужную команду. Пока стоит пауза, \
+не называй число дней трезвости.
 - Вечером он пишет благодарности: пять Богу, четыре людям, три себе. Они ведутся в теме «🌙 Вечер» \
 по кнопке «✨ Благодарности» или командой /thanks и сами попадают в чек-ин дня. \
 Если он хочет поблагодарить или ему тяжело вечером, можешь предложить это, а если просит, помоги найти, за что.
@@ -184,8 +188,11 @@ class Agent:
 
     def _context(self, now: datetime) -> str:
         line = f"[Сейчас {now.strftime('%d.%m.%Y %H:%M')}, {WEEKDAYS[now.weekday()]}, время Нячанга."
-        if self._config.sobriety_date:
-            line += f" Трезвость: {plural_days((now.date() - self._config.sobriety_date).days)}."
+        days = pause.sober_days(self._config.sobriety_date, self._state, now.date())
+        if pause.since(self._state):
+            line += " Утро, вечер и счёт дней трезвости на паузе (/stop), включить — /resume."
+        elif days is not None:
+            line += f" Трезвость: {plural_days(days)}."
         if self._config.sponsor_contact:
             line += f" Спонсор: {self._config.sponsor_contact}."
         return line + "]"

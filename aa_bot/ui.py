@@ -156,23 +156,29 @@ def inventory_record(page: dict, siblings: list[dict]) -> tuple[str, InlineKeybo
 # --- пульт дня ------------------------------------------------------------------
 
 
+PAUSED_LINE = "⏸ Утро, вечер и счёт дней на паузе. Включить: /resume"
+
+
 def checkin_state(checkin_page: dict | None) -> dict[str, bool]:
     return {key: bool(checkin_page and read(checkin_page, label)) for key, label in CHECKIN_FIELDS.items()}
 
 
 def dashboard(
     today: date,
-    sobriety: date | None,
+    sober_days: int | None,
     checkin_page: dict | None,
     people: list[dict],
     chat_id: int,
     topics: dict[str, int],
     gratitude_total: int = 0,
+    paused: bool = False,
 ) -> tuple[str, InlineKeyboardMarkup]:
     done = checkin_state(checkin_page)
     lines = [f"🕊 <b>Сегодня {today.strftime('%d.%m')}, {WEEKDAYS[today.weekday()]}</b>"]
-    if sobriety:
-        lines.append(f"Трезвость: <b>{plural_days((today - sobriety).days)}</b>")
+    if paused:
+        lines.append(PAUSED_LINE)
+    elif sober_days is not None:
+        lines.append(f"Трезвость: <b>{plural_days(sober_days)}</b>")
     lines.append(f"Практики дня: {sum(done.values())} из {len(done)}")
     marked, total = people_today(people, today.isoformat())
     if total:

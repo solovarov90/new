@@ -7,10 +7,11 @@
 import logging
 from datetime import date
 
-from . import entries, ui
+from . import entries, pause, ui
 from . import notion as n
 from .config import Config
 from .notion import Notion, NotionError, read
+from .state import State
 
 log = logging.getLogger(__name__)
 
@@ -31,9 +32,10 @@ def _norm(page_id: str) -> str:
 
 
 class Workspace:
-    def __init__(self, notion: Notion, config: Config):
+    def __init__(self, notion: Notion, config: Config, state: State | None = None):
         self.notion = notion
         self.config = config
+        self.state = state  # нужно, чтобы знать про паузу (/stop)
         self._schemas: dict[str, dict] = {}
 
     def _database(self, collection: str) -> str:
@@ -190,7 +192,9 @@ class Workspace:
             "people": by_status(people, "Молитва"),
             "checkin_today": done_today,
         }
-        if self.config.sobriety_date:
+        if self.state is not None and pause.since(self.state):
+            result["paused"] = "утро, вечер и счёт дней трезвости на паузе (/stop), включить — /resume"
+        elif self.config.sobriety_date:
             result["sober_days"] = (today - self.config.sobriety_date).days
         return result
 

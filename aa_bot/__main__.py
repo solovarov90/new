@@ -51,7 +51,7 @@ async def main() -> None:
     if cfg.gemini_api_key:
         client = genai.Client(api_key=cfg.gemini_api_key)
         assistant = Assistant(cfg.gemini_api_key, cfg.gemini_model, client)
-        agent = Agent(client, cfg.gemini_model, Workspace(notion, cfg), state, cfg)
+        agent = Agent(client, cfg.gemini_model, Workspace(notion, cfg, state), state, cfg)
     else:
         log.warning("GEMINI_API_KEY не задан: нет разговора, голосовые не расшифровываются")
 
@@ -93,6 +93,8 @@ COMMANDS = [
     BotCommand(command="sos", description="Когда тяжело"),
     BotCommand(command="new", description="Начать разговор с помощником заново"),
     BotCommand(command="sync", description="Обновить всё из Notion"),
+    BotCommand(command="stop", description="Пауза: без утра, вечера и счёта дней"),
+    BotCommand(command="resume", description="Снять паузу"),
     BotCommand(command="help", description="Как пользоваться"),
 ]
 

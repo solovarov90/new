@@ -31,7 +31,7 @@ def test_every_button_fits_telegram_limits():
         ui.inventory_record(pages[0], pages),
         ui.dashboard(
             date(2026, 10, 17),
-            date(2026, 6, 15),
+            124,
             None,
             [page(long_id, Имя=("title", "Отец"))],
             -1003990082908,
@@ -79,7 +79,7 @@ def test_dashboard_shows_checkin_state_and_topic_links():
     )
     mother = page("m1", Имя=("title", "Мать"), Молитва=("status", "Не начато"))
     text, keyboard = ui.dashboard(
-        date(2026, 10, 17), date(2026, 6, 15), checkin, [father, mother], -1003990082908, {"chat": 72, "sos": 9}
+        date(2026, 10, 17), 124, checkin, [father, mother], -1003990082908, {"chat": 72, "sos": 9}
     )
     assert "Трезвость: <b>124 дня</b>" in text and "Практики дня: 1 из 7" in text
     assert "Промаливание: 1 из 2" in text

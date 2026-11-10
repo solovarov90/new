@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import date, datetime, time, timedelta
 
-from . import ui
+from . import pause, ui
 from .app import App
 
 log = logging.getLogger(__name__)
@@ -26,7 +26,8 @@ class Scheduler:
             await asyncio.sleep(30)
 
     async def tick(self, now: datetime | None = None) -> None:
-        if not self.app.topics:
+        if not self.app.topics or pause.since(self.app.state):
+            # На паузе рассылку не отмечаем: после /resume внутри окна она всё равно уйдёт.
             return
         cfg = self.app.config
         now = now or self.app.now()
